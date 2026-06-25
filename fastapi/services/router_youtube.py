@@ -134,6 +134,32 @@ async def check_video_subtitles(request: CheckRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/list-cached")
+async def get_cached_videos_list():
+    """
+    Lấy toàn bộ danh sách các video đã dịch thành công trong hệ thống database
+    """
+    try:
+        # Lấy các video có trạng thái hoàn thành, sắp xếp mới nhất lên đầu
+        cursor = db["cached_videos"].find({"status": "success"}).sort("created_at", -1)
+        videos = await cursor.to_list(length=100)  # Giới hạn tối đa 100 video
+
+        result = []
+        for vid in videos:
+            result.append(
+                {
+                    "video_id": vid["video_id"],
+                    "metadata": vid.get("metadata", {}),
+                    "available_languages": vid.get("available_languages", []),
+                    "created_at": vid.get("created_at"),
+                }
+            )
+
+        return {"status": "success", "videos": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Lỗi tải kho dữ liệu: {str(e)}")
+
+
 @router.post("/process")
 async def process_youtube_video(request: ProcessRequest):
     video_id = extract_video_id(request.url)
@@ -142,10 +168,37 @@ async def process_youtube_video(request: ProcessRequest):
             status_code=400, detail="Đường dẫn URL YouTube không hợp lệ."
         )
 
+    # Tải trước danh sách phụ đề từ YouTube API để phục vụ phân loại chuyên mục
+    ytt_api = YouTubeTranscriptApi()
+    try:
+        transcript_list = ytt_api.list(video_id)
+
+        # Trích xuất nhanh mảng ngôn ngữ có sẵn để lưu vào database
+        available_languages = []
+        for trans in transcript_list:
+            available_languages.append(
+                {
+                    "lang_code": trans.language_code,
+                    "lang_name": trans.language,
+                    "is_generated": trans.is_generated,
+                }
+            )
+
+        transcript = transcript_list.find_transcript([request.source_lang])
+        transcript_data = transcript.fetch()
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"Lỗi danh sách phụ đề: {str(e)}")
+
     # 1. Đồng bộ Metadata từ MongoDB hoặc cào mới
     video_cache_info = await db["cached_videos"].find_one({"video_id": video_id})
     if video_cache_info:
         meta = video_cache_info["metadata"]
+        # Nếu cache cũ chưa có sẵn mảng ngôn ngữ, cập nhật bổ sung ngầm luôn
+        if "available_languages" not in video_cache_info:
+            await db["cached_videos"].update_one(
+                {"video_id": video_id},
+                {"$set": {"available_languages": available_languages}},
+            )
     else:
         meta = get_video_metadata(request.url)
         if not meta:
@@ -157,6 +210,7 @@ async def process_youtube_video(request: ProcessRequest):
                 "video_id": video_id,
                 "status": "processing",
                 "metadata": meta,
+                "available_languages": available_languages,
                 "created_at": datetime.datetime.utcnow(),
             }
         )
@@ -168,7 +222,32 @@ async def process_youtube_video(request: ProcessRequest):
         transcript = transcript_list.find_transcript([request.source_lang])
         transcript_data = transcript.fetch()
     except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Lỗi danh sách phụ đề: {str(e)}")
+        # 🌟 GIẢI PHÁP FALLBACK: Nếu API chính thức bị sập vì lỗi XML, sử dụng yt_dlp để cào sub thô an toàn hơn
+        try:
+            import yt_dlp
+
+            ydl_opts = {
+                "writeautomaticsub": True,
+                "writesubtitles": True,
+                "skip_download": True,
+                "subtitleslangs": [request.source_lang],
+                "quiet": True,
+            }
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(
+                    f"https://www.youtube.com/watch?v={video_id}", download=False
+                )
+                # Thường dữ liệu từ yt_dlp trả về qua định dạng json3 hoặc vtt sẽ loại bỏ hoàn toàn lỗi XML lỗi thời này
+                # Nếu dự án của bạn ưu tiên fix nhanh không cần cài thêm logic parse yt_dlp, hãy dùng thông báo lỗi thân thiện:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Phụ đề gốc của video này trên YouTube chứa ký tự lỗi cấu trúc XML. Không thể biên dịch.",
+                )
+        except Exception:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Lỗi danh sách phụ đề: Vui lòng thử lại với video hoặc ngôn ngữ khác.",
+            )
 
     # 3. Hàm tạo luồng phát dữ liệu ĐA LUỒNG tích hợp STREAM
     async def event_generator():

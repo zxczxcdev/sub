@@ -31,7 +31,6 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
 
-// Khởi tạo cấu hình Font chữ Hán mượt mà, chuẩn nét của Google Font
 const cnFont = Noto_Sans_SC({
   subsets: ['latin'],
   weight: ['400', '500', '700'],
@@ -67,10 +66,10 @@ export default function WatchPage() {
 
   // --- THIẾT LẬP ICON SETTING ---
   const [playbackSpeed, setPlaybackSpeed] = React.useState('1');
-  const [fontSize, setFontSize] = React.useState('medium'); // small, medium, larger
-  const [captionPosition, setCaptionPosition] = React.useState('bottom'); // bottom, top, off
-  const [listenPractice, setListenPractice] = React.useState(false); // Ngắt cuối câu
-  const [isLoopLine, setIsLoopLine] = React.useState(false); // Lặp câu hiện tại
+  const [fontSize, setFontSize] = React.useState('medium');
+  const [captionPosition, setCaptionPosition] = React.useState('bottom');
+  const [listenPractice, setListenPractice] = React.useState(false);
+  const [isLoopLine, setIsLoopLine] = React.useState(false);
 
   // --- BIẾN KIỂM SOÁT HÀNH VI LƯỚT CỦA USER ---
   const [isUserScrolling, setIsUserScrolling] = React.useState(false);
@@ -81,7 +80,6 @@ export default function WatchPage() {
     {},
   );
 
-  // Định dạng thời gian giây -> HH:MM:SS / MM:SS
   const formatTime = (secs: number) => {
     const h = Math.floor(secs / 3600);
     const m = Math.floor((secs % 3600) / 60);
@@ -100,7 +98,6 @@ export default function WatchPage() {
     }, 3000);
   };
 
-  // Hàm helper so khớp từ chữ Hán và chuỗi Pinyin từ Backend để bọc thẻ ruby chuẩn học thuật
   const renderHanziWithRuby = (hanziText: string, pinyinText: string) => {
     if (!pinyinText) return <span>{hanziText}</span>;
 
@@ -125,7 +122,7 @@ export default function WatchPage() {
             key={index}
             className="ruby-position-initial group/ruby flex flex-col items-center"
           >
-            <rt className="text-[11px] md:text-xs tracking-normal font-sans font-normal  mb-0.5 select-none opacity-90 leading-none h-4 flex items-end">
+            <rt className="text-[11px] md:text-xs tracking-normal font-sans font-normal mb-0.5 select-none opacity-90 leading-none h-4 flex items-end">
               {pyWords[index]}
             </rt>
             <span className="leading-none">{char}</span>
@@ -161,18 +158,22 @@ export default function WatchPage() {
 
     const connectToStream = async () => {
       try {
-        const response = await fetch(
-          'http://127.0.0.1:8000/api/youtube/process',
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              url: streamConfig.videoUrl,
-              source_lang: streamConfig.sourceLang,
-              target_lang: streamConfig.targetLang,
-            }),
-          },
-        );
+        const baseUrl =
+          process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+        const response = await fetch(`${baseUrl}/api/youtube/process`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: streamConfig.videoUrl,
+            source_lang: streamConfig.sourceLang,
+            target_lang: streamConfig.targetLang,
+          }),
+        });
+
+        if (!response.ok) {
+          if (isMounted) setStatus('error');
+          return;
+        }
 
         if (!response.body) throw new Error('Không thể kết nối luồng dữ liệu.');
         const reader = response.body.getReader();
@@ -191,6 +192,12 @@ export default function WatchPage() {
             if (!line.trim() || !isMounted) continue;
             try {
               const data = JSON.parse(line);
+
+              if (data.status === 'error') {
+                setStatus('error');
+                break;
+              }
+
               if (data.type === 'metadata') {
                 setVideoMeta(data.metadata);
                 setTotalLines(data.total_lines);
@@ -230,9 +237,13 @@ export default function WatchPage() {
       setCurrentTime(time);
       setDuration(player.getDuration() || 0);
 
-      const activeIndex = subtitles.findIndex(
-        (sub) => time >= sub.start && time <= sub.start + sub.duration,
-      );
+      const activeIndex = subtitles.findIndex((sub, idx) => {
+        const nextSub = subtitles[idx + 1];
+        if (nextSub) {
+          return time >= sub.start && time < nextSub.start;
+        }
+        return time >= sub.start && time <= sub.start + sub.duration;
+      });
 
       if (activeIndex !== -1) {
         setCurrentLineIndex(activeIndex);
@@ -277,20 +288,13 @@ export default function WatchPage() {
       if (isMobile) {
         const targetScrollTop =
           activeElement.offsetTop - container.offsetTop - 8;
-        container.scrollTo({
-          top: targetScrollTop,
-          behavior: 'smooth',
-        });
+        container.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
       } else {
-        activeElement.scrollIntoView({
-          behavior: 'smooth',
-          block: 'start',
-        });
+        activeElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
     }
   }, [currentLineIndex, isUserScrolling]);
 
-  // --- CÁC HÀM ĐIỀU KHIỂN LOGIC BUTTONS ---
   const handlePlayPause = () => {
     if (!player) return;
     if (isPlaying) {
@@ -385,15 +389,11 @@ export default function WatchPage() {
               }}
             />
 
-            {/* LAYOUT PHỤ ĐỀ NỀN ĐEN BLUR (Hiển thị ruby text chuẩn chỉnh học thuật) */}
             {captionPosition !== 'off' && currentLineIndex !== null && (
               <div
-                className={`absolute left-1/2 -translate-x-1/2 w-[85%] max-w-xl pointer-events-none transition-all duration-300 z-20 ${
-                  captionPosition === 'top' ? 'top-[6px]' : 'bottom-[6px]'
-                }`}
+                className={`absolute left-1/2 -translate-x-1/2 w-[85%] max-w-xl pointer-events-none transition-all duration-300 z-20 ${captionPosition === 'top' ? 'top-[6px]' : 'bottom-[6px]'}`}
               >
                 <div className="bg-black/60 backdrop-blur-md rounded-xl p-1 text-center border border-white/10 shadow-2xl flex flex-col gap-1">
-                  {/* Ngôn ngữ gốc */}
                   <span
                     className={`text-white font-medium tracking-wide flex justify-center items-center ${getFontSizeClass()}`}
                   >
@@ -406,7 +406,6 @@ export default function WatchPage() {
                         )
                       : subtitles[currentLineIndex]?.original_text}
                   </span>
-                  {/* Ngôn ngữ đã dịch */}
                   <span
                     className={`text-yellow-200/90 font-semibold flex justify-center items-center ${getFontSizeClass()}`}
                   >
@@ -455,11 +454,7 @@ export default function WatchPage() {
                   className="h-10 w-10 rounded-full shadow"
                   title={isPlaying ? 'Dừng' : 'Phát'}
                 >
-                  {isPlaying ? (
-                    <Pause className="w-4 h-4" />
-                  ) : (
-                    <Play className="w-4 h-4 fill-current" />
-                  )}
+                  <Pause className="w-4 h-4" />
                 </Button>
                 <Button
                   onClick={handleNextLine}
@@ -479,7 +474,6 @@ export default function WatchPage() {
                 >
                   <RotateCcw className="w-4 h-4" />
                 </Button>
-
                 <Button
                   onClick={() => setIsLoopLine(!isLoopLine)}
                   variant={isLoopLine ? 'default' : 'outline'}
@@ -488,7 +482,7 @@ export default function WatchPage() {
                 >
                   <RefreshCw
                     className={`w-3.5 h-3.5 ${isLoopLine ? 'animate-spin' : ''}`}
-                  />
+                  />{' '}
                   Lặp câu
                 </Button>
               </div>
@@ -511,7 +505,6 @@ export default function WatchPage() {
                     Cấu hình trình phát
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
-
                   <div className="p-2 flex flex-col gap-1">
                     <span className="text-[11px] font-bold text-muted-foreground">
                       Tốc độ phát (Speed)
@@ -539,7 +532,6 @@ export default function WatchPage() {
                     </DropdownMenuRadioGroup>
                   </div>
                   <DropdownMenuSeparator />
-
                   <div className="p-2 flex flex-col gap-1">
                     <span className="text-[11px] font-bold text-muted-foreground">
                       Kích cỡ phụ đề
@@ -566,7 +558,6 @@ export default function WatchPage() {
                     </DropdownMenuRadioGroup>
                   </div>
                   <DropdownMenuSeparator />
-
                   <div className="p-2 flex flex-col gap-1">
                     <span className="text-[11px] font-bold text-muted-foreground">
                       Hiển thị phụ đề trên video
@@ -593,7 +584,6 @@ export default function WatchPage() {
                     </DropdownMenuRadioGroup>
                   </div>
                   <DropdownMenuSeparator />
-
                   <div className="p-2 flex items-center justify-between">
                     <div className="flex flex-col">
                       <span className="text-xs font-bold text-foreground">
@@ -635,6 +625,11 @@ export default function WatchPage() {
                   Hoàn tất ({subtitles.length} câu)
                 </span>
               )}
+              {status === 'error' && (
+                <span className="text-xs text-destructive font-semibold bg-destructive/10 px-2 py-0.5 rounded-full">
+                  Lỗi dịch thuật
+                </span>
+              )}
             </div>
           </div>
 
@@ -642,70 +637,96 @@ export default function WatchPage() {
             onScroll={handleUserScroll}
             className="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar"
           >
-            {subtitles.length === 0 && status === 'processing' && (
+            {status === 'error' && subtitles.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center text-center p-4 space-y-2 select-none">
+                <div className="h-9 w-9 rounded-full bg-destructive/10 text-destructive flex items-center justify-center text-sm font-bold">
+                  !
+                </div>
+                <p className="text-xs font-semibold text-foreground">
+                  Không thể biên dịch video này
+                </p>
+                <p className="text-[11px] text-muted-foreground max-w-[200px]">
+                  Phụ đề gốc chứa ký tự lỗi XML hoặc mất kết nối API. Vui lòng
+                  thử lại video khác.
+                </p>
+              </div>
+            ) : subtitles.length === 0 && status === 'processing' ? (
               <div className="h-full flex flex-col items-center justify-center text-center p-4 space-y-2">
                 <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
                 <p className="text-xs text-muted-foreground">
                   Đang biên dịch luồng phụ đề...
                 </p>
               </div>
-            )}
-
-            {subtitles.map((sub, idx) => {
-              const isActive = currentLineIndex === idx;
-              return (
-                <div
-                  key={idx}
-                  ref={(el) => {
-                    subtitleRefs.current[idx] = el;
-                  }}
-                  onClick={() => {
-                    if (player) {
-                      player.seekTo(sub.start, true);
-                      player.playVideo();
-                      hasPausedForLine.current = null;
-                    }
-                  }}
-                  className={`group flex flex-col p-3 rounded-xl transition-all border duration-200 cursor-pointer ${
-                    isActive
-                      ? 'bg-primary/10 border-primary/40 shadow-sm'
-                      : 'bg-transparent border-transparent hover:bg-muted/60'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span
-                      className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono select-none ${
+            ) : (
+              <>
+                {subtitles.map((sub, idx) => {
+                  const isActive = currentLineIndex === idx;
+                  return (
+                    <div
+                      key={idx}
+                      ref={(el) => {
+                        subtitleRefs.current[idx] = el;
+                      }}
+                      onClick={() => {
+                        if (player) {
+                          player.seekTo(sub.start, true);
+                          player.playVideo();
+                          hasPausedForLine.current = null;
+                        }
+                      }}
+                      className={`group flex flex-col p-3 rounded-xl transition-all border duration-200 cursor-pointer ${
                         isActive
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted text-muted-foreground'
+                          ? 'bg-primary/10 border-primary/40 shadow-sm'
+                          : 'bg-transparent border-transparent hover:bg-muted/60'
                       }`}
                     >
-                      {sub.timestamp}
-                    </span>
-                  </div>
+                      <div className="flex items-center justify-between mb-1">
+                        <span
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono select-none ${
+                            isActive
+                              ? 'bg-primary text-primary-foreground'
+                              : 'bg-muted text-muted-foreground'
+                          }`}
+                        >
+                          {sub.timestamp}
+                        </span>
+                      </div>
 
-                  {/* Bảng phụ đề bên phải hiển thị ruby chữ Hán kèm bính âm nếu có */}
-                  <div
-                    className={`text-sm font-semibold leading-relaxed transition-colors flex flex-wrap gap-x-1 ${isActive ? 'text-primary' : 'text-foreground'}`}
-                  >
-                    {['zh-Hans', 'zh-Hant'].includes(
-                      streamConfig?.sourceLang || '',
-                    )
-                      ? renderHanziWithRuby(
-                          sub.original_text || '',
-                          sub.pinyin || '',
+                      <div
+                        className={`text-sm font-semibold leading-relaxed transition-colors flex flex-wrap gap-x-1 ${isActive ? 'text-primary' : 'text-foreground'}`}
+                      >
+                        {['zh-Hans', 'zh-Hant'].includes(
+                          streamConfig?.sourceLang || '',
                         )
-                      : sub.original_text}
-                  </div>
+                          ? renderHanziWithRuby(
+                              sub.original_text || '',
+                              sub.pinyin || '',
+                            )
+                          : sub.original_text}
+                      </div>
 
-                  <div className="text-xs text-muted-foreground/80 font-medium italic mt-2 flex flex-wrap gap-x-1">
-                    {['zh-CN', 'zh-TW'].includes(streamConfig?.targetLang || '')
-                      ? renderHanziWithRuby(sub.text || '', sub.pinyin || '')
-                      : sub.text}
+                      <div className="text-xs text-muted-foreground/80 font-medium italic mt-2 flex flex-wrap gap-x-1">
+                        {['zh-CN', 'zh-TW'].includes(
+                          streamConfig?.targetLang || '',
+                        )
+                          ? renderHanziWithRuby(
+                              sub.text || '',
+                              sub.pinyin || '',
+                            )
+                          : sub.text}
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {status === 'error' && subtitles.length > 0 && (
+                  <div className="p-3 rounded-xl border border-dashed border-destructive/30 bg-destructive/5 text-center text-[11px] text-destructive font-medium select-none">
+                    Luồng dịch thuật bị ngắt quãng giữa chừng do phụ đề gốc chứa
+                    ký tự lỗi.
                   </div>
-                </div>
-              );
-            })}
+                )}
+              </>
+            )}
           </div>
         </div>
       </div>

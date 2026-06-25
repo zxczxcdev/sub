@@ -14,7 +14,6 @@ import {
   History,
   LogIn,
   LogOut,
-  User as UserIcon,
   Loader2,
 } from 'lucide-react';
 
@@ -33,15 +32,7 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
-  DialogFooter,
 } from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -52,16 +43,9 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 
+import ConfigModal from '@/components/ConfigModal';
 import { auth, googleProvider } from '@/lib/firebase';
 import { signInWithPopup, signOut, User } from 'firebase/auth';
-
-const TARGET_LANGUAGES = [
-  { code: 'vi', name: 'Tiếng Việt' },
-  { code: 'en', name: 'English' },
-  { code: 'ja', name: '日本語' },
-  { code: 'ko', name: '한국어' },
-  { code: 'zh-CN', name: '中文 (简体)' },
-];
 
 export function Navbar() {
   const router = useRouter();
@@ -72,12 +56,11 @@ export function Navbar() {
   const [isOpenMobileMenu, setIsOpenMobileMenu] = React.useState(false);
   const [user, setUser] = React.useState<User | null>(null);
 
-  // --- STATES PHỤC VỤ LOGIC CHỌN SUB REALTIME ---
+  // --- STATES QUẢN LÝ LÀM SẠCH ĐỂ PHÙ HỢP VỚI CONFIGMODAL ---
   const [loadingCheck, setLoadingCheck] = React.useState(false);
   const [isOpenConfigModal, setIsOpenConfigModal] = React.useState(false);
   const [videoData, setVideoData] = React.useState<any>(null);
-  const [selectedSource, setSelectedSource] = React.useState('');
-  const [selectedTarget, setSelectedTarget] = React.useState('vi');
+  const [availableLanguages, setAvailableLanguages] = React.useState<any[]>([]);
 
   const mobileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -102,7 +85,6 @@ export function Navbar() {
     return match ? match[1] : null;
   };
 
-  // Hàm xử lý kiểm tra phụ đề chung cho cả Desktop và Mobile
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -114,10 +96,13 @@ export function Navbar() {
     }
 
     setLoadingCheck(true);
-    setIsOpenMobileMenu(false); // Đóng menu mobile nếu đang mở để không che Khuôn cấu hình
+    setIsOpenMobileMenu(false);
 
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/youtube/check', {
+      // 🌟 Thay đổi chuỗi url fetch cứng thành:
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+
+      const response = await fetch(`${baseUrl}/api/youtube/check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: searchQuery }),
@@ -129,47 +114,42 @@ export function Navbar() {
       }
 
       const data = await response.json();
-      setVideoData(data);
 
-      if (data.available_languages && data.available_languages.length > 0) {
-        setSelectedSource(data.available_languages[0].lang_code);
-      }
-
-      setIsOpenConfigModal(true); // Kích hoạt mở modal chọn cấu hình sub
+      // Đồng nhất cấu trúc bọc dữ liệu để truyền khớp tham số cho ConfigModal
+      setVideoData({
+        video_id: data.video_id,
+        metadata: data.metadata,
+      });
+      setAvailableLanguages(data.available_languages || []);
+      setIsOpenConfigModal(true);
     } catch (error: any) {
       alert(error.message);
-    }
-    {
+    } finally {
       setLoadingCheck(false);
     }
   };
 
-  const handleNavigateToWatch = () => {
-    if (!selectedSource || !selectedTarget) {
-      alert('Vui lòng chọn đầy đủ ngôn ngữ!');
-      return;
-    }
+  // Hàm callback nhận dữ liệu xác nhận chuyển trang từ ConfigModal con đẩy lên
+  const handleModalConfirm = (sourceLang: string, targetLang: string) => {
     setIsOpenConfigModal(false);
 
-    // 🌟 BƯỚC MỚI: Lưu thông tin cấu hình vào sessionStorage để truyền ngầm
     const configData = {
       url: searchQuery,
-      source_lang: selectedSource,
-      target_lang: selectedTarget,
+      source_lang: sourceLang,
+      target_lang: targetLang,
     };
     sessionStorage.setItem(
       `yt_config_${videoData.video_id}`,
       JSON.stringify(configData),
     );
 
-    // 🚀 ĐIỀU HƯỚNG URL SẠCH TUYỆT ĐỐI
     router.push(`/youtube/${videoData.video_id}`);
-    setSearchQuery(''); // Làm sạch ô nhập liệu
+    setSearchQuery('');
   };
 
   const handleGoogleAuth = async () => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
+      await signInWithPopup(auth, googleProvider);
       setIsOpenAuthModal(false);
     } catch (error) {
       console.error('Lỗi Auth Firebase:', error);
@@ -199,7 +179,6 @@ export function Navbar() {
     },
   ];
 
-  // --- CÁC SUB-COMPONENTS GIAO DIỆN PHỤ TRỢ ---
   const AuthModalContent = () => (
     <DialogContent className="sm:max-w-[400px] rounded-2xl border-border bg-background/95 backdrop-blur-md">
       <DialogHeader className="items-center text-center pt-4">
@@ -542,113 +521,14 @@ export function Navbar() {
         </header>
       </div>
 
-      {/* 🌟 DIALOG CHỌN CẤU HÌNH NGÔN NGỮ PHỤ ĐỀ */}
-      <Dialog open={isOpenConfigModal} onOpenChange={setIsOpenConfigModal}>
-        <DialogContent
-          // 🎯 SỬ DỤNG LỆNH NÀY ĐỂ HOÀN TOÀN FIX LỖI TRANH CHẤP FOCUS GIỮA DIALOG VÀ SELECT DROPDOWN
-          onOpenAutoFocus={(e) => e.preventDefault()}
-          className="sm:max-w-[460px] rounded-2xl bg-background/95 backdrop-blur-md z-[100]"
-        >
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold line-clamp-2">
-              {videoData?.metadata?.title || 'Đang tải tiêu đề...'}
-            </DialogTitle>
-
-            <DialogDescription className="text-xs font-medium text-muted-foreground pt-1">
-              {videoData?.metadata ? (
-                <>
-                  Kênh:{' '}
-                  <span className="font-semibold text-foreground">
-                    {videoData.metadata.author}
-                  </span>
-                  {' • '}
-                  Lượt xem:{' '}
-                  <span className="font-semibold text-foreground">
-                    {(videoData.metadata.view_count || 0).toLocaleString()}
-                  </span>
-                  {' • '}
-                  Lượt thích:{' '}
-                  <span className="font-semibold text-foreground">
-                    {(videoData.metadata.like_count || 0).toLocaleString()}
-                  </span>
-                </>
-              ) : (
-                'Đang tải thông tin video...'
-              )}
-            </DialogDescription>
-          </DialogHeader>
-
-          {videoData?.metadata?.thumbnail && (
-            <div className="w-full aspect-video rounded-xl overflow-hidden border border-border bg-muted">
-              <img
-                src={videoData.metadata.thumbnail}
-                alt="Thumbnail"
-                className="w-full h-full object-cover"
-              />
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 gap-4 my-2">
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-foreground">
-                Phụ đề gốc
-              </label>
-              <Select value={selectedSource} onValueChange={setSelectedSource}>
-                <SelectTrigger className="w-full rounded-xl bg-muted/40">
-                  <SelectValue placeholder="Chọn bản sub gốc" />
-                </SelectTrigger>
-                <SelectContent
-                  position="popper"
-                  className="rounded-xl mt-1 z-[150]"
-                >
-                  {videoData?.available_languages?.map((lang: any) => (
-                    <SelectItem key={lang.lang_code} value={lang.lang_code}>
-                      {lang.lang_name} {lang.is_generated ? '(Tự động)' : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-xs font-semibold text-foreground">
-                Ngôn ngữ dịch
-              </label>
-              <Select value={selectedTarget} onValueChange={setSelectedTarget}>
-                <SelectTrigger className="w-full rounded-xl bg-muted/40">
-                  <SelectValue placeholder="Chọn ngôn ngữ dịch" />
-                </SelectTrigger>
-                <SelectContent
-                  position="popper"
-                  className="rounded-xl mt-1 z-[150]"
-                >
-                  {TARGET_LANGUAGES.map((lang) => (
-                    <SelectItem key={lang.code} value={lang.code}>
-                      {lang.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <DialogFooter className="mt-4 sm:justify-end">
-            <Button
-              variant="outline"
-              onClick={() => setIsOpenConfigModal(false)}
-              className="rounded-full"
-            >
-              Hủy bỏ
-            </Button>
-            <Button
-              onClick={handleNavigateToWatch}
-              className="rounded-full px-6 cursor-pointer"
-            >
-              Xem ngay
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* 🌟 GỌI COMPONENT CÁU HÌNH TÁI SỬ DỤNG CHUNG TỪ THANH NAVBAR */}
+      <ConfigModal
+        isOpen={isOpenConfigModal}
+        onOpenChange={setIsOpenConfigModal}
+        video={videoData}
+        availableLanguages={availableLanguages}
+        onConfirm={handleModalConfirm}
+      />
 
       <Dialog open={isOpenConfirmLogout} onOpenChange={setIsOpenConfirmLogout}>
         <LogoutConfirmModalContent />
