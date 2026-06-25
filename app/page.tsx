@@ -6,10 +6,7 @@ import Image from 'next/image';
 export default function Home() {
   return (
     <div className="flex flex-wrap items-center gap-2 md:flex-row">
-      <div className="min-h-screen bg-background text-foreground">
-        {/* Gọi Navbar ở đây */}
-        <Navbar />
-      </div>
+      <div className="min-h-screen bg-background text-foreground"></div>
     </div>
   );
 }

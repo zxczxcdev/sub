@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import {
   Search,
@@ -14,6 +15,7 @@ import {
   LogIn,
   LogOut,
   User as UserIcon,
+  Loader2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -31,7 +33,15 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -45,12 +55,31 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { auth, googleProvider } from '@/lib/firebase';
 import { signInWithPopup, signOut, User } from 'firebase/auth';
 
+const TARGET_LANGUAGES = [
+  { code: 'vi', name: 'Tiếng Việt' },
+  { code: 'en', name: 'English' },
+  { code: 'ja', name: '日本語' },
+  { code: 'ko', name: '한국어' },
+  { code: 'zh-CN', name: '中文 (简体)' },
+];
+
 export function Navbar() {
+  const router = useRouter();
   const { setTheme, theme } = useTheme();
   const [searchQuery, setSearchQuery] = React.useState('');
   const [isOpenAuthModal, setIsOpenAuthModal] = React.useState(false);
   const [isOpenConfirmLogout, setIsOpenConfirmLogout] = React.useState(false);
+  const [isOpenMobileMenu, setIsOpenMobileMenu] = React.useState(false);
   const [user, setUser] = React.useState<User | null>(null);
+
+  // --- STATES PHỤC VỤ LOGIC CHỌN SUB REALTIME ---
+  const [loadingCheck, setLoadingCheck] = React.useState(false);
+  const [isOpenConfigModal, setIsOpenConfigModal] = React.useState(false);
+  const [videoData, setVideoData] = React.useState<any>(null);
+  const [selectedSource, setSelectedSource] = React.useState('');
+  const [selectedTarget, setSelectedTarget] = React.useState('vi');
+
+  const mobileInputRef = React.useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((currentUser) => {
@@ -59,16 +88,88 @@ export function Navbar() {
     return () => unsubscribe();
   }, []);
 
-  const handleSearch = (e: React.FormEvent) => {
+  React.useEffect(() => {
+    if (isOpenMobileMenu) {
+      setTimeout(() => {
+        mobileInputRef.current?.focus();
+      }, 150);
+    }
+  }, [isOpenMobileMenu]);
+
+  const extractVideoId = (url: string) => {
+    const regExp = /^.*(?:v=|\/)([0-9A-Za-z_-]{11}).*/;
+    const match = url.match(regExp);
+    return match ? match[1] : null;
+  };
+
+  // Hàm xử lý kiểm tra phụ đề chung cho cả Desktop và Mobile
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-    alert(`Đang tìm kiếm hoặc xử lý link: ${searchQuery}`);
+
+    const videoId = extractVideoId(searchQuery);
+    if (!videoId) {
+      alert('Đường dẫn YouTube không hợp lệ!');
+      return;
+    }
+
+    setLoadingCheck(true);
+    setIsOpenMobileMenu(false); // Đóng menu mobile nếu đang mở để không che Khuôn cấu hình
+
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/youtube/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: searchQuery }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Không thể kiểm tra video này.');
+      }
+
+      const data = await response.json();
+      setVideoData(data);
+
+      if (data.available_languages && data.available_languages.length > 0) {
+        setSelectedSource(data.available_languages[0].lang_code);
+      }
+
+      setIsOpenConfigModal(true); // Kích hoạt mở modal chọn cấu hình sub
+    } catch (error: any) {
+      alert(error.message);
+    }
+    {
+      setLoadingCheck(false);
+    }
+  };
+
+  const handleNavigateToWatch = () => {
+    if (!selectedSource || !selectedTarget) {
+      alert('Vui lòng chọn đầy đủ ngôn ngữ!');
+      return;
+    }
+    setIsOpenConfigModal(false);
+
+    // 🌟 BƯỚC MỚI: Lưu thông tin cấu hình vào sessionStorage để truyền ngầm
+    const configData = {
+      url: searchQuery,
+      source_lang: selectedSource,
+      target_lang: selectedTarget,
+    };
+    sessionStorage.setItem(
+      `yt_config_${videoData.video_id}`,
+      JSON.stringify(configData),
+    );
+
+    // 🚀 ĐIỀU HƯỚNG URL SẠCH TUYỆT ĐỐI
+    router.push(`/youtube/${videoData.video_id}`);
+    setSearchQuery(''); // Làm sạch ô nhập liệu
   };
 
   const handleGoogleAuth = async () => {
     try {
       const result = await signInWithPopup(auth, googleProvider);
-      console.log('User Info:', result.user);
       setIsOpenAuthModal(false);
     } catch (error) {
       console.error('Lỗi Auth Firebase:', error);
@@ -98,6 +199,7 @@ export function Navbar() {
     },
   ];
 
+  // --- CÁC SUB-COMPONENTS GIAO DIỆN PHỤ TRỢ ---
   const AuthModalContent = () => (
     <DialogContent className="sm:max-w-[400px] rounded-2xl border-border bg-background/95 backdrop-blur-md">
       <DialogHeader className="items-center text-center pt-4">
@@ -109,12 +211,11 @@ export function Navbar() {
           cài đặt phụ đề của bạn.
         </DialogDescription>
       </DialogHeader>
-
       <div className="flex flex-col gap-3 mt-4 mb-2">
         <Button
           variant="outline"
           onClick={handleGoogleAuth}
-          className="w-full h-11 rounded-full gap-2 font-medium transition-all duration-200 hover:bg-muted active:scale-[0.98] cursor-pointer"
+          className="w-full h-11 rounded-full gap-2 font-medium transition-all duration-200 hover:bg-muted cursor-pointer"
         >
           <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
             <path
@@ -137,11 +238,6 @@ export function Navbar() {
           Tiếp tục với Google
         </Button>
       </div>
-
-      <div className="text-[11px] text-muted-foreground text-center px-4 mt-2 leading-relaxed">
-        Bằng việc tiếp tục, bạn đồng ý với các Điều khoản dịch vụ và Chính sách
-        bảo mật của chúng tôi.
-      </div>
     </DialogContent>
   );
 
@@ -153,7 +249,7 @@ export function Navbar() {
         </DialogTitle>
         <DialogDescription className="text-muted-foreground pt-1">
           Bạn có chắc chắn muốn đăng xuất khỏi tài khoản **{user?.displayName}**
-          không? Mọi lịch sử xem chưa đồng bộ có thể không được lưu lại.
+          không?
         </DialogDescription>
       </DialogHeader>
       <div className="flex items-center justify-end gap-3 mt-4">
@@ -164,7 +260,11 @@ export function Navbar() {
         >
           Hủy bỏ
         </Button>
-        <Button onClick={handleSignOut} className=" rounded-full px-5">
+        <Button
+          variant="destructive"
+          onClick={handleSignOut}
+          className="rounded-full px-5"
+        >
           Đăng xuất
         </Button>
       </div>
@@ -180,7 +280,6 @@ export function Navbar() {
           .slice(0, 2)
           .toUpperCase()
       : 'US';
-
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -214,7 +313,7 @@ export function Navbar() {
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => setIsOpenConfirmLogout(true)}
-            className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer"
+            className="text-destructive cursor-pointer"
           >
             <LogOut className="mr-2 h-4 w-4" />
             <span>Đăng xuất</span>
@@ -238,6 +337,7 @@ export function Navbar() {
               </Link>
             </div>
 
+            {/* THANH TÌM KIẾM DESKTOP */}
             <form
               onSubmit={handleSearch}
               className="flex-1 max-w-sm mx-2 hidden md:flex items-center relative"
@@ -248,14 +348,20 @@ export function Navbar() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pr-10 w-full h-9 bg-muted/50 rounded-full border-input focus-visible:ring-ring"
+                disabled={loadingCheck}
               />
               <Button
                 type="submit"
                 variant="ghost"
                 size="icon"
-                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-transparent"
+                disabled={loadingCheck || !searchQuery.trim()}
+                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full text-muted-foreground"
               >
-                <Search className="w-4 h-4" />
+                {loadingCheck ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Search className="w-4 h-4" />
+                )}
               </Button>
             </form>
 
@@ -282,17 +388,8 @@ export function Navbar() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="md:hidden rounded-full h-9 w-9 text-muted-foreground hover:text-foreground"
-              >
-                <Search className="w-4 h-4" />
-              </Button>
-
-              <Button
-                variant="ghost"
-                size="icon"
-                className="rounded-full h-9 w-9 text-muted-foreground hover:text-foreground"
+                className="rounded-full h-9 w-9 text-muted-foreground"
                 onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-                title="Đổi giao diện"
               >
                 <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                 <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
@@ -309,7 +406,7 @@ export function Navbar() {
                     <DialogTrigger asChild>
                       <Button
                         variant="default"
-                        className="rounded-full h-9 px-5 text-sm font-medium shadow-sm"
+                        className="rounded-full h-9 px-5 text-sm font-medium"
                       >
                         Đăng nhập
                       </Button>
@@ -319,44 +416,57 @@ export function Navbar() {
                 )}
               </div>
 
-              <div className="lg:hidden">
-                <Sheet>
+              {/* KHỐI ĐIỀU HƯỚNG CHO MOBILE & TABLET */}
+              <div className="lg:hidden flex items-center gap-1">
+                <Sheet
+                  open={isOpenMobileMenu}
+                  onOpenChange={setIsOpenMobileMenu}
+                >
                   <SheetTrigger asChild>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="rounded-full h-9 w-9 text-muted-foreground hover:text-foreground"
+                      className="rounded-full h-9 w-9 text-muted-foreground"
                     >
                       <Menu className="w-4 h-4" />
                     </Button>
                   </SheetTrigger>
+
                   <SheetContent
                     side="right"
                     className="w-[280px] sm:w-[350px] flex flex-col justify-between pb-8 border-l border-border"
                   >
                     <div>
                       <SheetTitle className="text-center font-bold text-foreground flex items-center justify-center gap-2 mb-6 p-4">
-                        SubTubeCC111
+                        SubTubeCC
                       </SheetTitle>
 
+                      {/* THANH TÌM KIẾM TRÊN MOBILE MENU */}
                       <form
                         onSubmit={handleSearch}
                         className="flex items-center relative mb-6 px-1"
                       >
                         <Input
+                          ref={mobileInputRef}
                           type="text"
                           placeholder="Dán link YouTube..."
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
-                          className="w-full h-10 pl-4 pr-11 bg-muted/40 rounded-full border-input focus-visible:ring-ring transition-all"
+                          className="w-full h-10 pl-4 pr-11 bg-muted/40 rounded-full border-input"
+                          disabled={loadingCheck}
                         />
                         <Button
                           type="submit"
                           variant="ghost"
                           size="icon"
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+                          disabled={loadingCheck || !searchQuery.trim()}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full text-muted-foreground"
                         >
-                          <Search className="w-4 h-4" />
+                          {loadingCheck ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Search className="w-4 h-4" />
+                          )}
                         </Button>
                       </form>
 
@@ -365,8 +475,9 @@ export function Navbar() {
                           <Button
                             key={item.href}
                             variant="ghost"
-                            className="justify-start w-full text-base rounded-xl text-muted-foreground hover:text-foreground"
+                            className="justify-start w-full text-base rounded-xl text-muted-foreground"
                             asChild
+                            onClick={() => setIsOpenMobileMenu(false)}
                           >
                             <Link href={item.href}>
                               {item.icon}
@@ -397,7 +508,10 @@ export function Navbar() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => setIsOpenConfirmLogout(true)}
+                            onClick={() => {
+                              setIsOpenMobileMenu(false);
+                              setIsOpenConfirmLogout(true);
+                            }}
                             className="text-destructive rounded-full"
                           >
                             <LogOut className="w-4 h-4" />
@@ -427,6 +541,114 @@ export function Navbar() {
           </div>
         </header>
       </div>
+
+      {/* 🌟 DIALOG CHỌN CẤU HÌNH NGÔN NGỮ PHỤ ĐỀ */}
+      <Dialog open={isOpenConfigModal} onOpenChange={setIsOpenConfigModal}>
+        <DialogContent
+          // 🎯 SỬ DỤNG LỆNH NÀY ĐỂ HOÀN TOÀN FIX LỖI TRANH CHẤP FOCUS GIỮA DIALOG VÀ SELECT DROPDOWN
+          onOpenAutoFocus={(e) => e.preventDefault()}
+          className="sm:max-w-[460px] rounded-2xl bg-background/95 backdrop-blur-md z-[100]"
+        >
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold line-clamp-2">
+              {videoData?.metadata?.title || 'Đang tải tiêu đề...'}
+            </DialogTitle>
+
+            <DialogDescription className="text-xs font-medium text-muted-foreground pt-1">
+              {videoData?.metadata ? (
+                <>
+                  Kênh:{' '}
+                  <span className="font-semibold text-foreground">
+                    {videoData.metadata.author}
+                  </span>
+                  {' • '}
+                  Lượt xem:{' '}
+                  <span className="font-semibold text-foreground">
+                    {(videoData.metadata.view_count || 0).toLocaleString()}
+                  </span>
+                  {' • '}
+                  Lượt thích:{' '}
+                  <span className="font-semibold text-foreground">
+                    {(videoData.metadata.like_count || 0).toLocaleString()}
+                  </span>
+                </>
+              ) : (
+                'Đang tải thông tin video...'
+              )}
+            </DialogDescription>
+          </DialogHeader>
+
+          {videoData?.metadata?.thumbnail && (
+            <div className="w-full aspect-video rounded-xl overflow-hidden border border-border bg-muted">
+              <img
+                src={videoData.metadata.thumbnail}
+                alt="Thumbnail"
+                className="w-full h-full object-cover"
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-4 my-2">
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">
+                Phụ đề gốc
+              </label>
+              <Select value={selectedSource} onValueChange={setSelectedSource}>
+                <SelectTrigger className="w-full rounded-xl bg-muted/40">
+                  <SelectValue placeholder="Chọn bản sub gốc" />
+                </SelectTrigger>
+                <SelectContent
+                  position="popper"
+                  className="rounded-xl mt-1 z-[150]"
+                >
+                  {videoData?.available_languages?.map((lang: any) => (
+                    <SelectItem key={lang.lang_code} value={lang.lang_code}>
+                      {lang.lang_name} {lang.is_generated ? '(Tự động)' : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-xs font-semibold text-foreground">
+                Ngôn ngữ dịch
+              </label>
+              <Select value={selectedTarget} onValueChange={setSelectedTarget}>
+                <SelectTrigger className="w-full rounded-xl bg-muted/40">
+                  <SelectValue placeholder="Chọn ngôn ngữ dịch" />
+                </SelectTrigger>
+                <SelectContent
+                  position="popper"
+                  className="rounded-xl mt-1 z-[150]"
+                >
+                  {TARGET_LANGUAGES.map((lang) => (
+                    <SelectItem key={lang.code} value={lang.code}>
+                      {lang.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <DialogFooter className="mt-4 sm:justify-end">
+            <Button
+              variant="outline"
+              onClick={() => setIsOpenConfigModal(false)}
+              className="rounded-full"
+            >
+              Hủy bỏ
+            </Button>
+            <Button
+              onClick={handleNavigateToWatch}
+              className="rounded-full px-6 cursor-pointer"
+            >
+              Xem ngay
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isOpenConfirmLogout} onOpenChange={setIsOpenConfirmLogout}>
         <LogoutConfirmModalContent />

@@ -4,6 +4,7 @@ import type { Metadata } from 'next';
 import { Outfit, Geist_Mono } from 'next/font/google';
 import './globals.css';
 import { ThemeProvider } from '@/components/theme-provider';
+import { Navbar } from '@/components/ui/navbar';
 
 const fontSans = Outfit({
   subsets: ['latin'],
@@ -29,6 +30,10 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body>
         <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+          {/* Gọi Navbar ở đây */}
+          <div className="pb-4">
+            <Navbar />
+          </div>
           {children}
         </ThemeProvider>
       </body>
