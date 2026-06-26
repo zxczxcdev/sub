@@ -16,6 +16,8 @@ import {
   RotateCcw,
   RefreshCw,
   Settings,
+  Volume2,
+  VolumeX,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -24,10 +26,9 @@ import {
   DropdownMenuContent,
   DropdownMenuLabel,
   DropdownMenuSeparator,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
 
@@ -63,6 +64,10 @@ export default function WatchPage() {
   const [currentLineIndex, setCurrentLineIndex] = React.useState<number | null>(
     null,
   );
+
+  // --- TRẠNG THÁI ÂM LƯỢNG ---
+  const [volume, setVolume] = React.useState<number>(80);
+  const [isMuted, setIsMuted] = React.useState<boolean>(false);
 
   // --- THIẾT LẬP ICON SETTING ---
   const [playbackSpeed, setPlaybackSpeed] = React.useState('1');
@@ -203,10 +208,11 @@ export default function WatchPage() {
                 setTotalLines(data.total_lines);
               } else if (data.type === 'subtitle_line') {
                 setSubtitles((prev) => {
-                  if (prev.some((item) => item.index === data.index))
+                  if (prev.some((item) => item.start === data.line.start))
                     return prev;
                   const newArr = [...prev, { ...data.line, index: data.index }];
-                  return newArr.sort((a, b) => a.index - b.index);
+                  // 🌟 Sắp xếp đồng bộ theo 'start' để tránh bug lệch frame thời gian trên bảng phụ đề
+                  return newArr.sort((a, b) => a.start - b.start);
                 });
               } else if (data.type === 'done') {
                 setStatus('success');
@@ -230,7 +236,7 @@ export default function WatchPage() {
 
   // 3. Vòng lặp giám sát mốc thời gian của Youtube Player
   React.useEffect(() => {
-    if (!player) return;
+    if (!player || subtitles.length === 0) return;
 
     const interval = setInterval(() => {
       const time = player.getCurrentTime();
@@ -271,7 +277,7 @@ export default function WatchPage() {
     return () => clearInterval(interval);
   }, [player, subtitles, listenPractice, isLoopLine]);
 
-  // 4. XỬ LÝ ĐẨY PHỤ ĐỀ ACTIVE SÁT LÊN ĐẦU HỘP CHỨA (TOP SCROLL)
+  // 4. XỬ LÝ ĐẨY PHỤ ĐỀ ACTIVE SÁT LÊN ĐẦU HỘP CHỨA
   React.useEffect(() => {
     if (
       currentLineIndex === null ||
@@ -336,6 +342,30 @@ export default function WatchPage() {
     setCurrentTime(value[0]);
   };
 
+  const handleVolumeChange = (value: number[]) => {
+    const newVolume = value[0];
+    setVolume(newVolume);
+    if (player) {
+      player.setVolume(newVolume);
+      if (newVolume > 0 && isMuted) {
+        player.unMute();
+        setIsMuted(false);
+      }
+    }
+  };
+
+  const toggleMute = () => {
+    if (!player) return;
+    if (isMuted) {
+      player.unMute();
+      player.setVolume(volume);
+      setIsMuted(false);
+    } else {
+      player.mute();
+      setIsMuted(true);
+    }
+  };
+
   const getFontSizeClass = () => {
     if (fontSize === 'small') return 'text-xs md:text-sm';
     if (fontSize === 'larger') return 'text-xl md:text-2xl';
@@ -344,9 +374,10 @@ export default function WatchPage() {
 
   return (
     <div
-      className={`min-h-screen bg-background p-4 md:p-8 max-w-[111rem] mx-auto space-y-6 mt-12 ${cnFont.className}`}
+      className={`min-h-screen bg-background p-0 md:p-8 max-w-[111rem] mx-auto space-y-4 md:space-y-6 mt-12 ${cnFont.className}`}
     >
-      <div className="flex items-center justify-between">
+      {/* HEADER BAR */}
+      <div className="flex items-center justify-between px-4 md:px-0">
         <Button className="rounded-full gap-2" asChild>
           <Link href="/">
             <ArrowLeft className="w-4 h-4" /> Quay lại
@@ -361,10 +392,16 @@ export default function WatchPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
+      {/* GRID CONTAINER */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 items-start">
         <div className="lg:col-span-2 space-y-4">
-          <div className="w-full aspect-video rounded-2xl overflow-hidden shadow-lg border bg-black relative">
-            <div className="absolute inset-0 z-10 bg-transparent pointer-events-auto" />
+          {/* YOUTUBE PLAYER SCREEN */}
+          <div className="w-full aspect-video rounded-none md:rounded-2xl overflow-hidden shadow-lg border-b md:border bg-black relative group/player">
+            {/* Tấm chắn điều khiển Click Play/Pause trực tiếp */}
+            <div
+              onClick={handlePlayPause}
+              className="absolute inset-0 z-10 bg-transparent pointer-events-auto cursor-pointer"
+            />
 
             <YouTube
               videoId={videoId}
@@ -380,7 +417,10 @@ export default function WatchPage() {
                   modestbranding: 1,
                 },
               }}
-              onReady={(e) => setPlayer(e.target)}
+              onReady={(e) => {
+                setPlayer(e.target);
+                e.target.setVolume(volume);
+              }}
               onPlay={() => setIsPlaying(true)}
               onPause={() => setIsPlaying(false)}
               onStateChange={(e) => {
@@ -389,9 +429,20 @@ export default function WatchPage() {
               }}
             />
 
+            {/* Icon Hover động giữa màn hình */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 opacity-0 group-hover/player:opacity-40 transition-opacity duration-200">
+              <div className="p-4 rounded-full bg-black/60 text-white border border-white/10 shadow-md">
+                {isPlaying ? (
+                  <Pause className="w-8 h-8" />
+                ) : (
+                  <Play className="w-8 h-8 fill-current ml-1" />
+                )}
+              </div>
+            </div>
+
             {captionPosition !== 'off' && currentLineIndex !== null && (
               <div
-                className={`absolute left-1/2 -translate-x-1/2 w-[85%] max-w-xl pointer-events-none transition-all duration-300 z-20 ${captionPosition === 'top' ? 'top-[6px]' : 'bottom-[6px]'}`}
+                className={`absolute left-1/2 -translate-x-1/2 w-[90%] max-w-xl pointer-events-none transition-all duration-300 z-20 ${captionPosition === 'top' ? 'top-[6px]' : 'bottom-[6px]'}`}
               >
                 <div className="bg-black/60 backdrop-blur-md rounded-xl p-1 text-center border border-white/10 shadow-2xl flex flex-col gap-1">
                   <span
@@ -422,7 +473,7 @@ export default function WatchPage() {
           </div>
 
           {/* CONTROL BAR */}
-          <div className="p-4 rounded-2xl border bg-card/60 backdrop-blur-sm space-y-3 shadow-sm">
+          <div className="mx-4 md:mx-0 p-4 rounded-xl md:rounded-2xl border bg-card/60 backdrop-blur-sm space-y-3 shadow-sm">
             <div className="flex items-center gap-4">
               <Slider
                 value={[currentTime]}
@@ -437,54 +488,87 @@ export default function WatchPage() {
             </div>
 
             <div className="flex items-center justify-between pt-1">
-              <div className="flex items-center gap-1 md:gap-2">
-                <Button
-                  onClick={handlePreLine}
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 rounded-full"
-                  title="Câu trước"
-                >
-                  <SkipBack className="w-4 h-4" />
-                </Button>
-                <Button
-                  onClick={handlePlayPause}
-                  variant="default"
-                  size="icon"
-                  className="h-10 w-10 rounded-full shadow"
-                  title={isPlaying ? 'Dừng' : 'Phát'}
-                >
-                  <Pause className="w-4 h-4" />
-                </Button>
-                <Button
-                  onClick={handleNextLine}
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 rounded-full"
-                  title="Câu tiếp"
-                >
-                  <SkipForward className="w-4 h-4" />
-                </Button>
-                <Button
-                  onClick={handleReplayLine}
-                  variant="outline"
-                  size="icon"
-                  className="h-9 w-9 rounded-full"
-                  title="Nghe lại câu này"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                </Button>
-                <Button
-                  onClick={() => setIsLoopLine(!isLoopLine)}
-                  variant={isLoopLine ? 'default' : 'outline'}
-                  size="sm"
-                  className="rounded-full px-3 text-xs gap-1 font-medium"
-                >
-                  <RefreshCw
-                    className={`w-3.5 h-3.5 ${isLoopLine ? 'animate-spin' : ''}`}
-                  />{' '}
-                  Lặp câu
-                </Button>
+              <div className="flex items-center gap-3 w-full flex-wrap sm:flex-nowrap justify-between sm:justify-start">
+                <div className="flex items-center gap-1 md:gap-2">
+                  <Button
+                    onClick={handlePreLine}
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 rounded-full"
+                    title="Câu trước"
+                  >
+                    <SkipBack className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    onClick={handlePlayPause}
+                    variant="default"
+                    size="icon"
+                    className="h-10 w-10 rounded-full shadow"
+                    title={isPlaying ? 'Dừng' : 'Phát'}
+                  >
+                    {isPlaying ? (
+                      <Pause className="w-4 h-4" />
+                    ) : (
+                      <Play className="w-4 h-4 fill-current" />
+                    )}
+                  </Button>
+                  <Button
+                    onClick={handleNextLine}
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 rounded-full"
+                    title="Câu tiếp"
+                  >
+                    <SkipForward className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    onClick={handleReplayLine}
+                    variant="outline"
+                    size="icon"
+                    className="h-9 w-9 rounded-full"
+                    title="Nghe lại câu này"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    onClick={() => setIsLoopLine(!isLoopLine)}
+                    variant={isLoopLine ? 'default' : 'outline'}
+                    size="sm"
+                    className="rounded-full px-3 text-xs gap-1 font-medium"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 ${isLoopLine ? 'animate-spin' : ''}`}
+                    />{' '}
+                    Lặp câu
+                  </Button>
+                </div>
+
+                {/* VOLUME CONTROLLER (Full-width mượt mà ở mobile) */}
+                <div className="flex items-center gap-3 bg-muted/30 border px-3 h-9 rounded-full w-full sm:w-auto sm:min-w-[150px] flex-1 sm:flex-none">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={toggleMute}
+                    className="h-6 w-6 rounded-full text-muted-foreground hover:text-foreground shrink-0"
+                  >
+                    {isMuted || volume === 0 ? (
+                      <VolumeX className="w-4 h-4 text-destructive" />
+                    ) : (
+                      <Volume2 className="w-4 h-4" />
+                    )}
+                  </Button>
+                  <Slider
+                    value={[isMuted ? 0 : volume]}
+                    max={100}
+                    step={1}
+                    onValueChange={handleVolumeChange}
+                    className="flex-1 sm:w-20 cursor-pointer"
+                  />
+                  <span className="text-[10px] font-bold font-mono text-muted-foreground w-8 text-right select-none shrink-0">
+                    {isMuted ? 0 : volume}%
+                  </span>
+                </div>
               </div>
 
               <DropdownMenu>
@@ -492,7 +576,7 @@ export default function WatchPage() {
                   <Button
                     variant="outline"
                     size="icon"
-                    className="h-9 w-9 rounded-full"
+                    className="h-9 w-9 rounded-full shrink-0 ml-2"
                   >
                     <Settings className="w-4 h-4" />
                   </Button>
@@ -608,7 +692,7 @@ export default function WatchPage() {
         </div>
 
         {/* BẢNG PHỤ ĐỀ DỊCH THUẬT */}
-        <div className="w-full border rounded-2xl h-[calc(100vh-14rem)] min-h-[400px] flex flex-col bg-card/30 backdrop-blur-sm overflow-hidden">
+        <div className="w-full border-t border-b sm:border rounded-none sm:rounded-2xl h-[calc(100vh-14rem)] min-h-[400px] flex flex-col bg-card/30 backdrop-blur-sm overflow-hidden">
           <div className="p-4 border-b bg-muted/30 flex items-center justify-between shrink-0 select-none">
             <h2 className="font-semibold text-sm">Bảng phụ đề dịch thuật</h2>
             <div className="flex items-center gap-2">
@@ -682,11 +766,7 @@ export default function WatchPage() {
                     >
                       <div className="flex items-center justify-between mb-1">
                         <span
-                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono select-none ${
-                            isActive
-                              ? 'bg-primary text-primary-foreground'
-                              : 'bg-muted text-muted-foreground'
-                          }`}
+                          className={`text-[10px] font-bold px-1.5 py-0.5 rounded font-mono select-none ${isActive ? 'bg-primary text-primary-foreground' : 'bg-muted text-muted-foreground'}`}
                         >
                           {sub.timestamp}
                         </span>

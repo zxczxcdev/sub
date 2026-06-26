@@ -42,6 +42,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { toast } from 'sonner'; // 🌟 Sử dụng Toast component của Shadcn thay cho alert()
 
 import ConfigModal from '@/components/ConfigModal';
 import { auth, googleProvider } from '@/lib/firebase';
@@ -91,7 +92,8 @@ export function Navbar() {
 
     const videoId = extractVideoId(searchQuery);
     if (!videoId) {
-      alert('Đường dẫn YouTube không hợp lệ!');
+      // 🌟 Thay thế alert() thô bạo bằng toast.error mượt mà
+      toast.error('Đường dẫn YouTube không hợp lệ, vui lòng kiểm tra lại!');
       return;
     }
 
@@ -99,7 +101,6 @@ export function Navbar() {
     setIsOpenMobileMenu(false);
 
     try {
-      // 🌟 Thay đổi chuỗi url fetch cứng thành:
       const baseUrl = process.env.NEXT_PUBLIC_API_URL;
 
       const response = await fetch(`${baseUrl}/api/youtube/check`, {
@@ -115,7 +116,6 @@ export function Navbar() {
 
       const data = await response.json();
 
-      // Đồng nhất cấu trúc bọc dữ liệu để truyền khớp tham số cho ConfigModal
       setVideoData({
         video_id: data.video_id,
         metadata: data.metadata,
@@ -123,13 +123,13 @@ export function Navbar() {
       setAvailableLanguages(data.available_languages || []);
       setIsOpenConfigModal(true);
     } catch (error: any) {
-      alert(error.message);
+      // 🌟 Hiển thị thông báo lỗi hệ thống/API bằng toast
+      toast.error(error.message || 'Lỗi kết nối đến máy chủ.');
     } finally {
       setLoadingCheck(false);
     }
   };
 
-  // Hàm callback nhận dữ liệu xác nhận chuyển trang từ ConfigModal con đẩy lên
   const handleModalConfirm = (sourceLang: string, targetLang: string) => {
     setIsOpenConfigModal(false);
 
@@ -151,8 +151,10 @@ export function Navbar() {
     try {
       await signInWithPopup(auth, googleProvider);
       setIsOpenAuthModal(false);
+      toast.success('Đăng nhập thành công!');
     } catch (error) {
       console.error('Lỗi Auth Firebase:', error);
+      toast.error('Đăng nhập thất bại, vui lòng thử lại.');
     }
   };
 
@@ -160,8 +162,10 @@ export function Navbar() {
     try {
       await signOut(auth);
       setIsOpenConfirmLogout(false);
+      toast.success('Đã đăng xuất khỏi tài khoản.');
     } catch (error) {
       console.error('Lỗi đăng xuất:', error);
+      toast.error('Không thể đăng xuất, vui lòng thử lại.');
     }
   };
 
@@ -521,7 +525,6 @@ export function Navbar() {
         </header>
       </div>
 
-      {/* 🌟 GỌI COMPONENT CÁU HÌNH TÁI SỬ DỤNG CHUNG TỪ THANH NAVBAR */}
       <ConfigModal
         isOpen={isOpenConfigModal}
         onOpenChange={setIsOpenConfigModal}
