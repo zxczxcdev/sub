@@ -31,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Switch } from '@/components/ui/switch';
+import PracticeDashboard from '@/components/PracticeDashboard';
 
 const cnFont = Noto_Sans_SC({
   subsets: ['latin'],
@@ -69,12 +70,15 @@ export default function WatchPage() {
   const [volume, setVolume] = React.useState<number>(80);
   const [isMuted, setIsMuted] = React.useState<boolean>(false);
 
-  // --- THIẾT LẬP ICON SETTING ---
+  // --- THIẾT LẬP ICON SETTING QUẢN LÝ ---
   const [playbackSpeed, setPlaybackSpeed] = React.useState('1');
   const [fontSize, setFontSize] = React.useState('medium');
   const [captionPosition, setCaptionPosition] = React.useState('bottom');
   const [listenPractice, setListenPractice] = React.useState(false);
   const [isLoopLine, setIsLoopLine] = React.useState(false);
+  const [loopingLineIndex, setLoopingLineIndex] = React.useState<number | null>(
+    null,
+  );
 
   // --- BIẾN KIỂM SOÁT HÀNH VI LƯỚT CỦA USER ---
   const [isUserScrolling, setIsUserScrolling] = React.useState(false);
@@ -137,7 +141,6 @@ export default function WatchPage() {
     );
   };
 
-  // 1. Nạp config truyền ngầm từ sessionStorage
   React.useEffect(() => {
     if (!videoId) return;
     const rawData = sessionStorage.getItem(`yt_config_${videoId}`);
@@ -156,15 +159,13 @@ export default function WatchPage() {
     });
   }, [videoId]);
 
-  // 2. Kết nối API Stream Realtime
   React.useEffect(() => {
     if (!videoId || !streamConfig) return;
     let isMounted = true;
 
     const connectToStream = async () => {
       try {
-        const baseUrl =
-          process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000';
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL;
         const response = await fetch(`${baseUrl}/api/youtube/process`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -211,7 +212,6 @@ export default function WatchPage() {
                   if (prev.some((item) => item.start === data.line.start))
                     return prev;
                   const newArr = [...prev, { ...data.line, index: data.index }];
-                  // 🌟 Sắp xếp đồng bộ theo 'start' để tránh bug lệch frame thời gian trên bảng phụ đề
                   return newArr.sort((a, b) => a.start - b.start);
                 });
               } else if (data.type === 'done') {
@@ -234,7 +234,6 @@ export default function WatchPage() {
     };
   }, [videoId, streamConfig]);
 
-  // 3. Vòng lặp giám sát mốc thời gian của Youtube Player
   React.useEffect(() => {
     if (!player || subtitles.length === 0) return;
 
@@ -255,7 +254,16 @@ export default function WatchPage() {
         setCurrentLineIndex(activeIndex);
         const currentLine = subtitles[activeIndex];
 
-        if (
+        if (loopingLineIndex !== null) {
+          const targetLine = subtitles[loopingLineIndex];
+          if (
+            targetLine &&
+            time >= targetLine.start + targetLine.duration - 0.3
+          ) {
+            player.seekTo(targetLine.start, true);
+            return;
+          }
+        } else if (
           isLoopLine &&
           time >= currentLine.start + currentLine.duration - 0.3
         ) {
@@ -275,31 +283,39 @@ export default function WatchPage() {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [player, subtitles, listenPractice, isLoopLine]);
+  }, [player, subtitles, listenPractice, isLoopLine, loopingLineIndex]);
 
-  // 4. XỬ LÝ ĐẨY PHỤ ĐỀ ACTIVE SÁT LÊN ĐẦU HỘP CHỨA
+  // --- 🌟 KHẮC PHỤC TRIỆT ĐỂ: CUỘN NỘI BỘ BOX CHỨA (PREVENTS VIEWPORT JUMPING) ---
   React.useEffect(() => {
+    if (typeof window !== 'undefined' && window.name === 'dashboard_active') {
+      return; // Chặn hành vi tự động nhảy khi đang thao tác trong bài học
+    }
+
     if (
       currentLineIndex === null ||
       !subtitleRefs.current[currentLineIndex] ||
       isUserScrolling
-    )
+    ) {
       return;
+    }
 
     const activeElement = subtitleRefs.current[currentLineIndex];
     const container = activeElement?.parentElement;
-    const isMobile = window.innerWidth < 1024;
 
     if (container && activeElement) {
-      if (isMobile) {
-        const targetScrollTop =
-          activeElement.offsetTop - container.offsetTop - 8;
-        container.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
-      } else {
-        activeElement.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      }
+      // 🧠 THAY THẾ HOÀN TOÀN LỆNH scrollIntoView:
+      // Tính toán vị trí tương đối và sử dụng container.scrollTo để ép cuộn nội bộ 100%, không kéo màn hình tổng
+      const targetScrollTop =
+        activeElement.offsetTop - container.offsetTop - 12;
+      container.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
     }
   }, [currentLineIndex, isUserScrolling]);
+
+  React.useEffect(() => {
+    return () => {
+      if (typeof window !== 'undefined') window.name = '';
+    };
+  }, []);
 
   const handlePlayPause = () => {
     if (!player) return;
@@ -334,6 +350,30 @@ export default function WatchPage() {
     player.seekTo(subtitles[currentLineIndex].start, true);
     player.playVideo();
     hasPausedForLine.current = null;
+  };
+
+  const handleSpecificLineReplay = (e: React.MouseEvent, start: number) => {
+    e.stopPropagation();
+    if (!player) return;
+    player.seekTo(start, true);
+    player.playVideo();
+    hasPausedForLine.current = null;
+  };
+
+  const handleSpecificLineLoop = (
+    e: React.MouseEvent,
+    index: number,
+    start: number,
+  ) => {
+    e.stopPropagation();
+    if (!player) return;
+    if (loopingLineIndex === index) {
+      setLoopingLineIndex(null);
+    } else {
+      setLoopingLineIndex(index);
+      player.seekTo(start, true);
+      player.playVideo();
+    }
   };
 
   const handleSeekSlider = (value: number[]) => {
@@ -374,11 +414,11 @@ export default function WatchPage() {
 
   return (
     <div
-      className={`min-h-screen bg-background p-0 md:p-8 max-w-[111rem] mx-auto space-y-4 md:space-y-6 mt-12 ${cnFont.className}`}
+      className={`min-h-screen bg-background p-0 md:p-8 px-4 md:px-8 max-w-[111rem] mx-auto space-y-4 md:space-y-6 mt-12 ${cnFont.className}`}
     >
       {/* HEADER BAR */}
-      <div className="flex items-center justify-between px-4 md:px-0">
-        <Button className="rounded-full gap-2" asChild>
+      <div className="flex items-center justify-between">
+        <Button className="rounded-full gap-2" variant="outline" asChild>
           <Link href="/">
             <ArrowLeft className="w-4 h-4" /> Quay lại
           </Link>
@@ -396,13 +436,11 @@ export default function WatchPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-6 items-start">
         <div className="lg:col-span-2 space-y-4">
           {/* YOUTUBE PLAYER SCREEN */}
-          <div className="w-full aspect-video rounded-none md:rounded-2xl overflow-hidden shadow-lg border-b md:border bg-black relative group/player">
-            {/* Tấm chắn điều khiển Click Play/Pause trực tiếp */}
+          <div className="w-full aspect-video rounded-xl md:rounded-2xl overflow-hidden shadow-lg border bg-black relative group/player">
             <div
               onClick={handlePlayPause}
               className="absolute inset-0 z-10 bg-transparent pointer-events-auto cursor-pointer"
             />
-
             <YouTube
               videoId={videoId}
               className="w-full h-full relative z-0"
@@ -428,8 +466,6 @@ export default function WatchPage() {
                 if (e.data === 2) setIsPlaying(false);
               }}
             />
-
-            {/* Icon Hover động giữa màn hình */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10 opacity-0 group-hover/player:opacity-40 transition-opacity duration-200">
               <div className="p-4 rounded-full bg-black/60 text-white border border-white/10 shadow-md">
                 {isPlaying ? (
@@ -439,7 +475,6 @@ export default function WatchPage() {
                 )}
               </div>
             </div>
-
             {captionPosition !== 'off' && currentLineIndex !== null && (
               <div
                 className={`absolute left-1/2 -translate-x-1/2 w-[90%] max-w-xl pointer-events-none transition-all duration-300 z-20 ${captionPosition === 'top' ? 'top-[6px]' : 'bottom-[6px]'}`}
@@ -473,7 +508,7 @@ export default function WatchPage() {
           </div>
 
           {/* CONTROL BAR */}
-          <div className="mx-4 md:mx-0 p-4 rounded-xl md:rounded-2xl border bg-card/60 backdrop-blur-sm space-y-3 shadow-sm">
+          <div className="p-4 rounded-xl md:rounded-2xl border bg-card/60 backdrop-blur-sm space-y-3 shadow-sm">
             <div className="flex items-center gap-4">
               <Slider
                 value={[currentTime]}
@@ -486,7 +521,6 @@ export default function WatchPage() {
                 {formatTime(currentTime)} / {formatTime(duration)}
               </span>
             </div>
-
             <div className="flex items-center justify-between pt-1">
               <div className="flex items-center gap-3 w-full flex-wrap sm:flex-nowrap justify-between sm:justify-start">
                 <div className="flex items-center gap-1 md:gap-2">
@@ -531,7 +565,10 @@ export default function WatchPage() {
                     <RotateCcw className="w-4 h-4" />
                   </Button>
                   <Button
-                    onClick={() => setIsLoopLine(!isLoopLine)}
+                    onClick={() => {
+                      setIsLoopLine(!isLoopLine);
+                      setLoopingLineIndex(null);
+                    }}
                     variant={isLoopLine ? 'default' : 'outline'}
                     size="sm"
                     className="rounded-full px-3 text-xs gap-1 font-medium"
@@ -542,8 +579,6 @@ export default function WatchPage() {
                     Lặp câu
                   </Button>
                 </div>
-
-                {/* VOLUME CONTROLLER (Full-width mượt mà ở mobile) */}
                 <div className="flex items-center gap-3 bg-muted/30 border px-3 h-9 rounded-full w-full sm:w-auto sm:min-w-[150px] flex-1 sm:flex-none">
                   <Button
                     type="button"
@@ -570,7 +605,6 @@ export default function WatchPage() {
                   </span>
                 </div>
               </div>
-
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -625,6 +659,7 @@ export default function WatchPage() {
                       onValueChange={setFontSize}
                     >
                       <div className="flex gap-1 pt-1">
+                        {/* 🌟 ĐÃ FIX LỖI TYPO ĐỒNG BỘ THÀNH DropdownMenuRadioItem TẠI ĐÂY */}
                         {['small', 'medium', 'larger'].map((sz) => (
                           <DropdownMenuRadioItem
                             key={sz}
@@ -692,7 +727,7 @@ export default function WatchPage() {
         </div>
 
         {/* BẢNG PHỤ ĐỀ DỊCH THUẬT */}
-        <div className="w-full border-t border-b sm:border rounded-none sm:rounded-2xl h-[calc(100vh-14rem)] min-h-[400px] flex flex-col bg-card/30 backdrop-blur-sm overflow-hidden">
+        <div className="w-full border rounded-xl md:rounded-2xl h-[calc(100vh-14rem)] min-h-[400px] flex flex-col bg-card/30 backdrop-blur-sm overflow-hidden">
           <div className="p-4 border-b bg-muted/30 flex items-center justify-between shrink-0 select-none">
             <h2 className="font-semibold text-sm">Bảng phụ đề dịch thuật</h2>
             <div className="flex items-center gap-2">
@@ -745,6 +780,7 @@ export default function WatchPage() {
               <>
                 {subtitles.map((sub, idx) => {
                   const isActive = currentLineIndex === idx;
+                  const isCurrentLooping = loopingLineIndex === idx;
                   return (
                     <div
                       key={idx}
@@ -758,11 +794,7 @@ export default function WatchPage() {
                           hasPausedForLine.current = null;
                         }
                       }}
-                      className={`group flex flex-col p-3 rounded-xl transition-all border duration-200 cursor-pointer ${
-                        isActive
-                          ? 'bg-primary/10 border-primary/40 shadow-sm'
-                          : 'bg-transparent border-transparent hover:bg-muted/60'
-                      }`}
+                      className={`group flex flex-col p-3 rounded-xl transition-all border duration-200 cursor-pointer ${isActive ? 'bg-primary/10 border-primary/40 shadow-sm' : 'bg-transparent border-transparent hover:bg-muted/60'}`}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <span
@@ -770,8 +802,37 @@ export default function WatchPage() {
                         >
                           {sub.timestamp}
                         </span>
+                        {isActive && (
+                          <div className="flex items-center gap-1.5 select-none">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="h-6 w-6 p-0 rounded-full text-muted-foreground hover:text-primary hover:bg-primary/10 transition-colors"
+                              onClick={(e) =>
+                                handleSpecificLineReplay(e, sub.start)
+                              }
+                              title="Nghe lại câu này"
+                            >
+                              <RotateCcw className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              variant={isCurrentLooping ? 'default' : 'ghost'}
+                              className={`h-6 w-6 p-0 rounded-full transition-all ${isCurrentLooping ? 'bg-primary text-primary-foreground hover:bg-primary/90' : 'text-muted-foreground hover:text-primary hover:bg-primary/10'}`}
+                              onClick={(e) =>
+                                handleSpecificLineLoop(e, idx, sub.start)
+                              }
+                              title={
+                                isCurrentLooping ? 'Đang lặp' : 'Lặp câu này'
+                              }
+                            >
+                              <RefreshCw
+                                className={`w-3.5 h-3.5 ${isCurrentLooping ? 'animate-spin' : ''}`}
+                              />
+                            </Button>
+                          </div>
+                        )}
                       </div>
-
                       <div
                         className={`text-sm font-semibold leading-relaxed transition-colors flex flex-wrap gap-x-1 ${isActive ? 'text-primary' : 'text-foreground'}`}
                       >
@@ -784,7 +845,6 @@ export default function WatchPage() {
                             )
                           : sub.original_text}
                       </div>
-
                       <div className="text-xs text-muted-foreground/80 font-medium italic mt-2 flex flex-wrap gap-x-1">
                         {['zh-CN', 'zh-TW'].includes(
                           streamConfig?.targetLang || '',
@@ -798,7 +858,6 @@ export default function WatchPage() {
                     </div>
                   );
                 })}
-
                 {status === 'error' && subtitles.length > 0 && (
                   <div className="p-3 rounded-xl border border-dashed border-destructive/30 bg-destructive/5 text-center text-[11px] text-destructive font-medium select-none">
                     Luồng dịch thuật bị ngắt quãng giữa chừng do phụ đề gốc chứa
@@ -810,6 +869,13 @@ export default function WatchPage() {
           </div>
         </div>
       </div>
+
+      {/* PRACTICE DASHBOARD */}
+      <PracticeDashboard
+        subtitles={subtitles}
+        player={player}
+        currentLineIndex={currentLineIndex}
+      />
     </div>
   );
 }
