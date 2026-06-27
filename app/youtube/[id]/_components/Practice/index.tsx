@@ -61,11 +61,11 @@ const PracticeContainer: React.FC<PracticeContainerProps> = ({
           name: 'Match translation',
           desc: 'Nối các cặp câu phụ đề với nghĩa dịch đúng',
         },
-        {
-          id: 'pick_translation',
-          name: 'Pick translation',
-          desc: 'Chọn bản dịch chính xác nhất cho câu vừa nghe',
-        },
+        // {
+        //   id: 'pick_translation',
+        //   name: 'Pick translation',
+        //   desc: 'Chọn bản dịch chính xác nhất cho câu vừa nghe',
+        // },
         {
           id: 'order_lines',
           name: 'Order the lines',

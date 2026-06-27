@@ -15,6 +15,15 @@ import { Play, SkipForward, Gauge, RefreshCw } from 'lucide-react';
 import DictationExercise from './DictationExercise';
 import MatchByEarExercise from './MatchByEarExercise';
 import SpotErrorExercise from './SpotErrorExercise';
+import FillBlankExercise from './FillBlankExercise';
+import MatchTranslationExercise from './MatchTranslationExercise';
+import PickTranslationExercise from './PickTranslationExercise';
+import OrderLinesExercise from './OrderLinesExercise';
+import TypeBlankExercise from './TypeBlankExercise';
+import WordOrderExercise from './WordOrderExercise';
+import TranslateBlankExercise from './TranslateBlankExercise';
+import ShadowingExercise from './ShadowingExercise';
+
 interface ExerciseWorkspaceProps {
   streamConfig: { sourceLang: string } | null;
   currentExercise: {
@@ -132,11 +141,70 @@ const ExerciseWorkspace: React.FC<ExerciseWorkspaceProps> = ({
             streamConfig={streamConfig}
           />
         );
+      case 'fill_blank':
+        return (
+          <FillBlankExercise
+            currentSub={currentSub}
+            onNextQuestion={triggerNextLine}
+            streamConfig={streamConfig}
+          />
+        );
+      //       case 'pick_translation':
+      //         return (
+      //           <PickTranslationExercise
+      //             currentSub={currentSub}
+      //             subtitles={subtitles}
+      //             onNextQuestion={triggerNextLine}
+      //             streamConfig={streamConfig}
+      //           />
+      //         );
+      case 'match_translation':
+        return (
+          <MatchTranslationExercise
+            currentSub={currentSub}
+            subtitles={subtitles} // Cần mảng full subtitles để lấy câu nhiễu bẫy trắc nghiệm
+            onNextQuestion={triggerNextLine}
+          />
+        );
+      case 'order_lines':
+        return (
+          <OrderLinesExercise
+            subtitles={subtitles}
+            currentLineIndex={currentLineIndex}
+            onNextQuestion={triggerNextLine}
+          />
+        );
+      case 'type_blank':
+        return (
+          <TypeBlankExercise
+            currentSub={currentSub}
+            onNextQuestion={triggerNextLine}
+            streamConfig={streamConfig}
+          />
+        );
       case 'word_order':
         return (
-          <div className="text-sm font-medium">
-            🔤 Giao diện bài tập Word Order (Đang phát triển...)
-          </div>
+          <WordOrderExercise
+            currentSub={currentSub}
+            onNextQuestion={triggerNextLine}
+            streamConfig={streamConfig}
+          />
+        );
+      case 'translate_blank':
+        return (
+          <TranslateBlankExercise
+            currentSub={currentSub}
+            onNextQuestion={triggerNextLine}
+            streamConfig={streamConfig}
+          />
+        );
+      case 'shadowing':
+        return (
+          <ShadowingExercise
+            currentSub={currentSub}
+            onNextQuestion={triggerNextLine}
+            streamConfig={streamConfig}
+          />
         );
       default:
         return (
