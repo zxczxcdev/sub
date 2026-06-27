@@ -1,3 +1,5 @@
+"use client"
+
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import datetime
@@ -25,7 +27,6 @@ LANGUAGE_MAPPING = {
     "iw": "he",
 }
 
-# Giới hạn tối đa workers an toàn để bảo vệ tài nguyên hệ thống
 executor = ThreadPoolExecutor(max_workers=70)
 
 
@@ -45,9 +46,7 @@ class ProcessRequest(BaseModel):
 def generate_pinyin(text: str) -> str:
     """Tự động chuyển đổi văn bản tiếng Trung thành chuỗi phiên âm Pinyin kèm dấu thanh điệu"""
     try:
-        # Chuyển đổi thành dạng mảng pinyin kèm dấu điệu (Ví dụ: [['Chéng'], ['dū']])
         pinyin_list = pinyin(text, style=Style.TONE)
-        # Gộp các ký tự đơn lẻ lại phân cách bằng khoảng trắng
         return " ".join([item[0] for item in pinyin_list])
     except Exception:
         return ""
@@ -69,8 +68,16 @@ def extract_video_id(url: str) -> str:
 
 
 def get_video_metadata(video_url: str):
-    """Trích xuất thông tin chi tiết video qua yt_dlp"""
-    ydl_opts = {"quiet": True, "no_warnings": True}
+    """Trích xuất thông tin chi tiết video qua yt_dlp kèm cấu hình bypass tường lửa"""
+    ydl_opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "prefer_insecure": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    }
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(video_url, download=False)
@@ -103,23 +110,55 @@ async def check_video_subtitles(request: CheckRequest):
                 status_code=404, detail="Không thể lấy thông tin từ video này."
             )
 
+        available_languages = []
         ytt_api = YouTubeTranscriptApi()
+
         try:
             transcript_list = ytt_api.list(video_id)
-        except Exception as e:
+            for trans in transcript_list:
+                available_languages.append(
+                    {
+                        "lang_code": trans.language_code,
+                        "lang_name": trans.language,
+                        "is_generated": trans.is_generated,
+                    }
+                )
+        except Exception:
+            try:
+                ydl_opts = {
+                    "writeautomaticsub": True,
+                    "skip_download": True,
+                    "quiet": True,
+                    "http_headers": {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    },
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(
+                        f"https://www.youtube.com/watch?v={video_id}", download=False
+                    )
+                    subtitles = info.get("subtitles", {})
+                    automatic_subs = info.get("automatic_captions", {})
+
+                    all_langs = set(
+                        list(subtitles.keys()) + list(automatic_subs.keys())
+                    )
+                    for lang in all_langs:
+                        available_languages.append(
+                            {
+                                "lang_code": lang,
+                                "lang_name": lang.upper(),
+                                "is_generated": lang in automatic_subs
+                                and lang not in subtitles,
+                            }
+                        )
+            except Exception:
+                pass
+
+        if not available_languages:
             raise HTTPException(
                 status_code=404,
-                detail=f"Video không hỗ trợ phụ đề: {str(e)}",
-            )
-
-        available_languages = []
-        for trans in transcript_list:
-            available_languages.append(
-                {
-                    "lang_code": trans.language_code,
-                    "lang_name": trans.language,
-                    "is_generated": trans.is_generated,
-                }
+                detail="Video này hiện tại không chứa dữ liệu phụ đề công khai.",
             )
 
         return {
@@ -134,32 +173,6 @@ async def check_video_subtitles(request: CheckRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/list-cached")
-async def get_cached_videos_list():
-    """
-    Lấy toàn bộ danh sách các video đã dịch thành công trong hệ thống database
-    """
-    try:
-        # Lấy các video có trạng thái hoàn thành, sắp xếp mới nhất lên đầu
-        cursor = db["cached_videos"].find({"status": "success"}).sort("created_at", -1)
-        videos = await cursor.to_list(length=100)  # Giới hạn tối đa 100 video
-
-        result = []
-        for vid in videos:
-            result.append(
-                {
-                    "video_id": vid["video_id"],
-                    "metadata": vid.get("metadata", {}),
-                    "available_languages": vid.get("available_languages", []),
-                    "created_at": vid.get("created_at"),
-                }
-            )
-
-        return {"status": "success", "videos": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Lỗi tải kho dữ liệu: {str(e)}")
-
-
 @router.post("/process")
 async def process_youtube_video(request: ProcessRequest):
     video_id = extract_video_id(request.url)
@@ -168,93 +181,160 @@ async def process_youtube_video(request: ProcessRequest):
             status_code=400, detail="Đường dẫn URL YouTube không hợp lệ."
         )
 
-    # Tải trước danh sách phụ đề từ YouTube API để phục vụ phân loại chuyên mục
-    ytt_api = YouTubeTranscriptApi()
-    try:
-        transcript_list = ytt_api.list(video_id)
+    # 🌟 1. KIỂM TRA TRƯỚC TRONG DATABASE ĐỂ TRÁNH QUÉT TRÙNG LẶP YOUTUBE API
+    video_cache_info = await db["cached_videos"].find_one({"video_id": video_id})
 
-        # Trích xuất nhanh mảng ngôn ngữ có sẵn để lưu vào database
-        available_languages = []
-        for trans in transcript_list:
-            available_languages.append(
+    # Đếm xem cặp ngôn ngữ này đã được dịch hoàn tất bao nhiêu dòng trong DB
+    cached_subs_count = await db["cached_subtitles"].count_documents(
+        {
+            "video_id": video_id,
+            "source_lang": request.source_lang,
+            "target_lang": request.target_lang,
+        }
+    )
+
+    # Nếu video đã xử lý thành công VÀ có chứa dữ liệu phụ đề dịch thuật trong DB -> Bật chế độ lấy thẳng 100% từ Database
+    is_fully_cached = (
+        video_cache_info
+        and video_cache_info.get("status") == "success"
+        and cached_subs_count > 0
+    )
+
+    transcript_data = []
+    available_languages = []
+
+    if is_fully_cached:
+        # Chế độ lấy thẳng từ MongoDB: Tạo mảng giả lập độ dài từ database phụ đề có sẵn
+        meta = video_cache_info["metadata"]
+        total_lines_count = cached_subs_count
+    else:
+        # Chế độ chưa có Cache: Tiến hành luồng quét YouTube API và yt_dlp như cũ
+        ytt_api = YouTubeTranscriptApi()
+        try:
+            transcript_list = ytt_api.list(video_id)
+            for trans in transcript_list:
+                available_languages.append(
+                    {
+                        "lang_code": trans.language_code,
+                        "lang_name": trans.language,
+                        "is_generated": trans.is_generated,
+                    }
+                )
+            transcript = transcript_list.find_transcript([request.source_lang])
+            transcript_data = transcript.fetch()
+        except Exception as e:
+            try:
+                ydl_opts = {
+                    "writeautomaticsub": True,
+                    "writesubtitles": True,
+                    "skip_download": True,
+                    "subtitleslangs": [request.source_lang],
+                    "quiet": True,
+                    "http_headers": {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    },
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(
+                        f"https://www.youtube.com/watch?v={video_id}", download=False
+                    )
+                    subtitles_dict = info.get("subtitles", {})
+                    auto_dict = info.get("automatic_captions", {})
+
+                    for lang in set(
+                        list(subtitles_dict.keys()) + list(auto_dict.keys())
+                    ):
+                        available_languages.append(
+                            {
+                                "lang_code": lang,
+                                "lang_name": lang.upper(),
+                                "is_generated": lang in auto_dict
+                                and lang not in subtitles_dict,
+                            }
+                        )
+
+                    requested_sub_list = subtitles_dict.get(
+                        request.source_lang
+                    ) or auto_dict.get(request.source_lang)
+                    if not requested_sub_list:
+                        raise Exception()
+
+                    json3_url = next(
+                        (
+                            f["url"]
+                            for f in requested_sub_list
+                            if f.get("ext") == "json3"
+                        ),
+                        None,
+                    )
+                    if not json3_url:
+                        json3_url = requested_sub_list[0]["url"]
+
+                    raw_sub_content = ydl.urlopen(json3_url).read().decode("utf-8")
+                    sub_json = json.loads(raw_sub_content)
+
+                    for event in sub_json.get("events", []):
+                        if (
+                            "segs" in event
+                            and "".join(
+                                [s.get("utf8", "") for s in event["segs"]]
+                            ).strip()
+                            != ""
+                        ):
+                            text_combined = "".join(
+                                [s.get("utf8", "") for s in event["segs"]]
+                            )
+                            start_ms = event.get("tStartMs", 0)
+                            duration_ms = event.get("dDurationMs", 0)
+                            transcript_data.append(
+                                {
+                                    "text": text_combined.strip(),
+                                    "start": start_ms / 1000.0,
+                                    "duration": duration_ms / 1000.0,
+                                }
+                            )
+            except Exception as err:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Hệ thống YouTube đang thực hiện chặn yêu cầu cào dữ liệu từ IP máy chủ này. Vui lòng thử lại sau hoặc đổi sang video khác.",
+                )
+
+        if not transcript_data:
+            raise HTTPException(
+                status_code=404,
+                detail="Không tìm thấy hoặc không thể giải mã tệp phụ đề của video này.",
+            )
+
+        total_lines_count = len(transcript_data)
+        if video_cache_info:
+            meta = video_cache_info["metadata"]
+            if "available_languages" not in video_cache_info:
+                await db["cached_videos"].update_one(
+                    {"video_id": video_id},
+                    {"$set": {"available_languages": available_languages}},
+                )
+        else:
+            meta = get_video_metadata(request.url)
+            if not meta:
+                raise HTTPException(
+                    status_code=404, detail="Không thể lấy thông tin từ video này."
+                )
+            await db["cached_videos"].insert_one(
                 {
-                    "lang_code": trans.language_code,
-                    "lang_name": trans.language,
-                    "is_generated": trans.is_generated,
+                    "video_id": video_id,
+                    "status": "processing",
+                    "metadata": meta,
+                    "available_languages": available_languages,
+                    "created_at": datetime.datetime.utcnow(),
                 }
             )
 
-        transcript = transcript_list.find_transcript([request.source_lang])
-        transcript_data = transcript.fetch()
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Lỗi danh sách phụ đề: {str(e)}")
-
-    # 1. Đồng bộ Metadata từ MongoDB hoặc cào mới
-    video_cache_info = await db["cached_videos"].find_one({"video_id": video_id})
-    if video_cache_info:
-        meta = video_cache_info["metadata"]
-        # Nếu cache cũ chưa có sẵn mảng ngôn ngữ, cập nhật bổ sung ngầm luôn
-        if "available_languages" not in video_cache_info:
-            await db["cached_videos"].update_one(
-                {"video_id": video_id},
-                {"$set": {"available_languages": available_languages}},
-            )
-    else:
-        meta = get_video_metadata(request.url)
-        if not meta:
-            raise HTTPException(
-                status_code=404, detail="Không thể lấy thông tin từ video này."
-            )
-        await db["cached_videos"].insert_one(
-            {
-                "video_id": video_id,
-                "status": "processing",
-                "metadata": meta,
-                "available_languages": available_languages,
-                "created_at": datetime.datetime.utcnow(),
-            }
-        )
-
-    # 2. Tải phụ đề từ YouTube API
-    ytt_api = YouTubeTranscriptApi()
-    try:
-        transcript_list = ytt_api.list(video_id)
-        transcript = transcript_list.find_transcript([request.source_lang])
-        transcript_data = transcript.fetch()
-    except Exception as e:
-        # 🌟 GIẢI PHÁP FALLBACK: Nếu API chính thức bị sập vì lỗi XML, sử dụng yt_dlp để cào sub thô an toàn hơn
-        try:
-            import yt_dlp
-
-            ydl_opts = {
-                "writeautomaticsub": True,
-                "writesubtitles": True,
-                "skip_download": True,
-                "subtitleslangs": [request.source_lang],
-                "quiet": True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(
-                    f"https://www.youtube.com/watch?v={video_id}", download=False
-                )
-                # Thường dữ liệu từ yt_dlp trả về qua định dạng json3 hoặc vtt sẽ loại bỏ hoàn toàn lỗi XML lỗi thời này
-                # Nếu dự án của bạn ưu tiên fix nhanh không cần cài thêm logic parse yt_dlp, hãy dùng thông báo lỗi thân thiện:
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"Phụ đề gốc của video này trên YouTube chứa ký tự lỗi cấu trúc XML. Không thể biên dịch.",
-                )
-        except Exception:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Lỗi danh sách phụ đề: Vui lòng thử lại với video hoặc ngôn ngữ khác.",
-            )
-
-    # 3. Hàm tạo luồng phát dữ liệu ĐA LUỒNG tích hợp STREAM
+    # 3. HÀM ENGINE STREAM DỮ LIỆU REALTIME
     async def event_generator():
         google_source = LANGUAGE_MAPPING.get(request.source_lang, request.source_lang)
         google_target = LANGUAGE_MAPPING.get(request.target_lang, request.target_lang)
 
-        # BẮN LƯỢT 1: Metadata tổng quan trả về ngay lập tức
+        # BẮN PHÁT 1: Trả về Metadata cấu trúc tổng quan luôn
         yield (
             json.dumps(
                 {
@@ -262,7 +342,7 @@ async def process_youtube_video(request: ProcessRequest):
                     "type": "metadata",
                     "video_id": video_id,
                     "metadata": meta,
-                    "total_lines": len(transcript_data),
+                    "total_lines": total_lines_count,
                 },
                 ensure_ascii=False,
             )
@@ -270,7 +350,7 @@ async def process_youtube_video(request: ProcessRequest):
         )
         await asyncio.sleep(0.01)
 
-        # Lấy checkpoint cũ lưu trong MongoDB
+        # Đọc kho phụ đề từ MongoDB ra
         cursor = (
             db["cached_subtitles"]
             .find(
@@ -284,117 +364,156 @@ async def process_youtube_video(request: ProcessRequest):
         )
         db_subtitles = await cursor.to_list(length=None)
 
-        # Tạo cấu trúc tra cứu cache nhanh: { index: { "translated_text": ..., "pinyin": ... } }
-        cached_subs_dict = {
-            item["index"]: {
-                "translated_text": item.get("translated_text", ""),
-                "pinyin": item.get("pinyin", ""),
-            }
-            for item in db_subtitles
-        }
-
-        # 🌟 THUẬT TOÁN ĐA LUỒNG THEO CỤM (BATCH MULTI-THREADING)
-        batch_size = 30
-        loop = asyncio.get_event_loop()
-
-        for i in range(0, len(transcript_data), batch_size):
-            batch_entries = transcript_data[i : i + batch_size]
-            tasks = []
-            batch_indices = []
-
-            for sub_idx, entry in enumerate(batch_entries):
-                global_index = i + sub_idx
-                batch_indices.append(global_index)
-
-                if global_index in cached_subs_dict:
-
-                    async def get_cached(cached_item):
-                        return cached_item["translated_text"]
-
-                    tasks.append(get_cached(cached_subs_dict[global_index]))
-                else:
-                    tasks.append(
-                        loop.run_in_executor(
-                            executor,
-                            translate_single_text,
-                            google_source,
-                            google_target,
-                            entry.text,
-                        )
-                    )
-
-            # 🚀 Kích hoạt dịch SONG SONG toàn bộ các câu trong cụm hiện tại
-            translated_batch_results = await asyncio.gather(*tasks)
-
-            # Đóng gói dữ liệu, ghi checkpoint MongoDB và yield bắn stream về Frontend
-            for sub_idx, entry in enumerate(batch_entries):
-                global_index = batch_indices[sub_idx]
-                translated_text = translated_batch_results[sub_idx]
-
-                start_time = entry.start
-                duration = entry.duration
-                minutes, seconds = divmod(start_time, 60)
-                hours, minutes = divmod(minutes, 60)
-                timestamp = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
-
-                # 🌟 XỬ LÝ PINYIN: Kiểm tra xem ngôn ngữ gốc hoặc đích có phải tiếng Trung không
-                pinyin_text = ""
-                if global_index in cached_subs_dict:
-                    pinyin_text = cached_subs_dict[global_index]["pinyin"]
-                else:
-                    if google_source in ["zh-CN", "zh-TW"]:
-                        pinyin_text = generate_pinyin(entry.text)
-                    elif google_target in ["zh-CN", "zh-TW"]:
-                        pinyin_text = generate_pinyin(translated_text)
-
-                # Ghi checkpoint mới vào MongoDB kèm trường pinyin nếu câu này chưa từng được lưu
-                if global_index not in cached_subs_dict:
-                    await db["cached_subtitles"].insert_one(
-                        {
-                            "video_id": video_id,
-                            "source_lang": request.source_lang,
-                            "target_lang": request.target_lang,
-                            "index": global_index,
-                            "start": start_time,
-                            "duration": duration,
-                            "timestamp": timestamp,
-                            "original_text": entry.text,
-                            "translated_text": translated_text,
-                            "pinyin": pinyin_text,
-                            "created_at": datetime.datetime.utcnow(),
-                        }
-                    )
-
-                # Bắn stream realtime kết quả (bao gồm pinyin) về Next.js
+        # Trường hợp 1: Nếu đã có Cache đầy đủ hoàn tất trong hệ thống DB -> Stream thẳng dữ liệu tĩnh ra ngoài
+        if is_fully_cached:
+            for item in db_subtitles:
                 yield (
                     json.dumps(
                         {
                             "status": "processing",
                             "type": "subtitle_line",
-                            "index": global_index,
+                            "index": item["index"],
                             "line": {
-                                "start": start_time,
-                                "duration": duration,
-                                "timestamp": timestamp,
-                                "text": translated_text,
-                                "original_text": entry.text,
-                                "pinyin": pinyin_text,
+                                "start": item["start"],
+                                "duration": item["duration"],
+                                "timestamp": item["timestamp"],
+                                "text": item["translated_text"],
+                                "original_text": item["original_text"],
+                                "pinyin": item.get("pinyin", ""),
                             },
                         },
                         ensure_ascii=False,
                     )
                     + "\n"
                 )
+                # Tạo độ trễ siêu nhỏ mô phỏng hiệu ứng luồng gối đầu mượt mà cho client
+                await asyncio.sleep(0.001)
+        else:
+            # Trường hợp 2: Chưa có Cache hoặc thiếu dòng -> Kích hoạt lõi dịch đa luồng Batch Multi-Threading
+            cached_subs_dict = {
+                item["index"]: {
+                    "translated_text": item.get("translated_text", ""),
+                    "pinyin": item.get("pinyin", ""),
+                }
+                for item in db_subtitles
+            }
 
-            # Giải phóng nhẹ vòng lặp mạng sau mỗi cụm gối đầu
-            await asyncio.sleep(0.001)
+            batch_size = 30
+            loop = asyncio.get_event_loop()
 
-        # ĐÁNH DẤU HOÀN THÀNH TOÀN BỘ VIDEO
-        await db["cached_videos"].update_one(
-            {"video_id": video_id},
-            {"$set": {"status": "success", "updated_at": datetime.datetime.utcnow()}},
-        )
+            for i in range(0, len(transcript_data), batch_size):
+                batch_entries = transcript_data[i : i + batch_size]
+                tasks = []
+                batch_indices = []
 
+                for sub_idx, entry in enumerate(batch_entries):
+                    global_index = i + sub_idx
+                    batch_indices.append(global_index)
+
+                    if global_index in cached_subs_dict:
+
+                        async def get_cached(cached_item):
+                            return cached_item["translated_text"]
+
+                        tasks.append(get_cached(cached_subs_dict[global_index]))
+                    else:
+                        entry_text = (
+                            entry.get("text") if isinstance(entry, dict) else entry.text
+                        )
+                        tasks.append(
+                            loop.run_in_executor(
+                                executor,
+                                translate_single_text,
+                                google_source,
+                                google_target,
+                                entry_text,
+                            )
+                        )
+
+                translated_batch_results = await asyncio.gather(*tasks)
+
+                for sub_idx, entry in enumerate(batch_entries):
+                    global_index = batch_indices[sub_idx]
+                    translated_text = translated_batch_results[sub_idx]
+
+                    entry_text = (
+                        entry.get("text") if isinstance(entry, dict) else entry.text
+                    )
+                    start_time = (
+                        entry.get("start") if isinstance(entry, dict) else entry.start
+                    )
+                    duration = (
+                        entry.get("duration")
+                        if isinstance(entry, dict)
+                        else entry.duration
+                    )
+
+                    minutes, seconds = divmod(start_time, 60)
+                    hours, minutes = divmod(minutes, 60)
+                    timestamp = (
+                        f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+                    )
+
+                    pinyin_text = ""
+                    if global_index in cached_subs_dict:
+                        pinyin_text = cached_subs_dict[global_index]["pinyin"]
+                    else:
+                        if google_source in ["zh-CN", "zh-TW"]:
+                            pinyin_text = generate_pinyin(entry_text)
+                        elif google_target in ["zh-CN", "zh-TW"]:
+                            pinyin_text = generate_pinyin(translated_text)
+
+                    if global_index not in cached_subs_dict:
+                        await db["cached_subtitles"].insert_one(
+                            {
+                                "video_id": video_id,
+                                "source_lang": request.source_lang,
+                                "target_lang": request.target_lang,
+                                "index": global_index,
+                                "start": start_time,
+                                "duration": duration,
+                                "timestamp": timestamp,
+                                "original_text": entry_text,
+                                "translated_text": translated_text,
+                                "pinyin": pinyin_text,
+                                "created_at": datetime.datetime.utcnow(),
+                            }
+                        )
+
+                    yield (
+                        json.dumps(
+                            {
+                                "status": "processing",
+                                "type": "subtitle_line",
+                                "index": global_index,
+                                "line": {
+                                    "start": start_time,
+                                    "duration": duration,
+                                    "timestamp": timestamp,
+                                    "text": translated_text,
+                                    "original_text": entry_text,
+                                    "pinyin": pinyin_text,
+                                },
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+
+                await asyncio.sleep(0.001)
+
+            # Chỉ cập nhật trạng thái bảng tổng sau khi kết thúc luồng dịch đa luồng mới hoàn toàn
+            await db["cached_videos"].update_one(
+                {"video_id": video_id},
+                {
+                    "$set": {
+                        "status": "success",
+                        "updated_at": datetime.datetime.utcnow(),
+                    }
+                },
+            )
+
+        # BẮN PHÁT CUỐI: Chốt hạ đóng cổng Stream thành công
         yield (
             json.dumps({"status": "success", "type": "done"}, ensure_ascii=False) + "\n"
         )

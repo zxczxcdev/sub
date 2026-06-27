@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from services import router_youtube
+from services import router_youtube, router_practice
 
 app = FastAPI(title="SubTubeCC Simple API")
 
@@ -23,3 +23,4 @@ def read_root():
 
 # Nạp các tính năng vào hệ thống định tuyến
 app.include_router(router_youtube.router, prefix="/api/youtube", tags=["YouTube"])
+app.include_router(router_practice.router, prefix="/api/practice", tags=["Practice"])
