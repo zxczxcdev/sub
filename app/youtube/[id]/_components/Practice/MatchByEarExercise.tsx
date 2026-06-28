@@ -3,12 +3,13 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, XCircle, Undo2 } from 'lucide-react';
+import { decryptClientData } from '@/lib/cryptoClient';
 
 interface MatchByEarExerciseProps {
   currentSub: {
     original_text: string;
     text: string;
-    sourceLang?: string; // Để nhận diện nếu cần chia text theo ký tự đơn (tiếng Trung)
+    sourceLang?: string;
   } | null;
   onNextQuestion: () => void;
   streamConfig: { sourceLang: string } | null;
@@ -19,50 +20,81 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
   onNextQuestion,
   streamConfig,
 }) => {
-  const [poolTokens, setPoolTokens] = React.useState<string[]>([]); // Các từ chưa chọn
-  const [selectedTokens, setSelectedTokens] = React.useState<string[]>([]); // Các từ đã chọn theo thứ tự
+  const [poolTokens, setPoolTokens] = React.useState<string[]>([]);
+  const [selectedTokens, setSelectedTokens] = React.useState<string[]>([]);
   const [status, setStatus] = React.useState<'idle' | 'success' | 'error'>(
     'idle',
   );
 
-  // Khởi tạo và xáo trộn từ vựng khi đổi câu sub
-  React.useEffect(() => {
-    if (!currentSub) return;
-
-    let tokens: string[] = [];
-    const text = currentSub.original_text.trim();
-    const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
-      streamConfig?.sourceLang?.toLowerCase() || '',
-    );
-
-    if (isChinese) {
-      // Tiếng Trung: Tách thành từng ký tự, loại bỏ khoảng trắng và dấu câu cơ bản
-      tokens = text
-        .replace(/[\s[:punct:]，。！？、（）()""'';；：:]/g, '')
-        .split('');
-    } else {
-      // Ngôn ngữ khác: Tách theo khoảng trắng, loại bỏ dấu câu ở rìa từ
-      tokens = text
-        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()!?，。]/g, '')
-        .split(/\s+/)
-        .filter((t) => t.length > 0);
-    }
-
-    // Sao chép mảng và xáo trộn ngẫu nhiên (Fisher-Yates)
-    const shuffled = [...tokens];
+  // Hàm hỗ trợ xáo trộn mảng cho luồng không phải tiếng Trung
+  const shuffleArray = (array: string[]) => {
+    const shuffled = [...array];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
+    return shuffled;
+  };
 
-    setPoolTokens(shuffled);
-    setSelectedTokens([]);
-    setStatus('idle');
+  React.useEffect(() => {
+    if (!currentSub) return;
+
+    const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
+      streamConfig?.sourceLang?.toLowerCase() || '',
+    );
+
+    const CLEAN_REGEX = /[\s\p{P}’‘“”]/gu;
+
+    const loadTokensDirectly = async () => {
+      // 🌟 1. CHẶN KHÔNG CHO TIẾNG ANH/HÀN GỌI API FASTAPI
+      if (!isChinese) {
+        const rawWords = currentSub.original_text.split(/\s+/);
+        // Giữ nguyên từ nguyên bản cho khay lựa chọn, lọc bỏ khoảng trống thừa
+        const cleanWords = rawWords.filter((word) => word.trim().length > 0);
+
+        setPoolTokens(shuffleArray(cleanWords));
+        setSelectedTokens([]);
+        setStatus('idle');
+        return;
+      }
+
+      // 🌟 2. CHỈ TIẾNG TRUNG MỚI ĐƯỢC GỌI BACKEND JIEBA
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+        const response = await fetch(`${baseUrl}/api/practice/segment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: currentSub.original_text,
+            is_chinese: true,
+          }),
+        });
+
+        const resData = await response.json();
+        if (!resData.data) return;
+
+        const decryptedData = await decryptClientData(resData.data);
+        const tokens: string[] = decryptedData.tokens || [];
+
+        if (tokens.length === 0) return;
+
+        setPoolTokens(tokens); // FastAPI đã shuffle sẵn
+        setSelectedTokens([]);
+        setStatus('idle');
+      } catch (error) {
+        console.error('Lỗi kết nối trực tiếp FastAPI ở MatchByEar:', error);
+        const fallbackChinese = currentSub.original_text
+          .replace(CLEAN_REGEX, '')
+          .split('');
+        setPoolTokens(shuffleArray(fallbackChinese));
+      }
+    };
+
+    loadTokensDirectly();
   }, [currentSub, streamConfig]);
 
   if (!currentSub) return null;
 
-  // Chọn từ đưa lên khay đáp án
   const handleSelectToken = (token: string, index: number) => {
     if (status === 'success') return;
     setSelectedTokens([...selectedTokens, token]);
@@ -70,7 +102,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
     if (status === 'error') setStatus('idle');
   };
 
-  // Trả từ ngược lại khay lựa chọn
   const handleUnselectToken = (token: string, index: number) => {
     if (status === 'success') return;
     setPoolTokens([...poolTokens, token]);
@@ -78,7 +109,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
     if (status === 'error') setStatus('idle');
   };
 
-  // Reset nhanh toàn bộ từ đã chọn
   const handleReset = () => {
     if (status === 'success') return;
     setPoolTokens([...poolTokens, ...selectedTokens]);
@@ -86,17 +116,20 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
     setStatus('idle');
   };
 
-  // Kiểm tra đáp án
   const handleCheckAnswer = () => {
-    const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
-      streamConfig?.sourceLang?.toLowerCase() || '',
-    );
+    if (!currentSub) return;
+
+    // 🌟 3. ĐỒNG BỘ UNICODE REGEX CHUẨN TRÌNH DUYỆT ĐỂ LÀM SẠCH TUYỆT ĐỐI
+    const GLOBAL_CLEAN_REGEX = /[\s\p{P}’‘“”\-\[\]\{\}\\\/]/gu;
 
     const cleanOriginal = currentSub.original_text
       .toLowerCase()
-      .replace(/[\s[:punct:]，。！？、（）()""'';；：:]/g, '');
+      .replace(GLOBAL_CLEAN_REGEX, '');
 
-    const cleanUser = selectedTokens.join(isChinese ? '' : '').toLowerCase();
+    const cleanUser = selectedTokens
+      .join('')
+      .toLowerCase()
+      .replace(GLOBAL_CLEAN_REGEX, '');
 
     if (cleanUser === cleanOriginal) {
       setStatus('success');
@@ -107,7 +140,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
 
   return (
     <div className="space-y-6 w-full max-w-xl mx-auto pt-2 animate-in fade-in-50 duration-200">
-      {/* 1. GỢI Ý NGHĨA DỊCH */}
       <div className="p-4 rounded-xl bg-muted/50 border border-border/60 select-none">
         <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block mb-0.5">
           Gợi ý nghĩa bản dịch
@@ -117,7 +149,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
         </p>
       </div>
 
-      {/* 2. KHAY CHỨA CÁC TỪ ĐÃ CHỌN (ANSWER AREA) */}
       <div className="space-y-2">
         <div className="flex items-center justify-between select-none">
           <span className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
@@ -158,7 +189,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
         </div>
       </div>
 
-      {/* 3. KHAY CHỨA CÁC TỪ GỢI Ý ĐỂ LỰA CHỌN (POOL AREA) */}
       {poolTokens.length > 0 && (
         <div className="space-y-2 select-none">
           <span className="text-xs font-bold text-muted-foreground/60 uppercase tracking-wide">
@@ -181,7 +211,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
         </div>
       )}
 
-      {/* 4. PHẢN HỒI KẾT QUẢ */}
       {status === 'success' && (
         <div className="flex items-start gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400">
           <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
@@ -206,7 +235,6 @@ const MatchByEarExercise: React.FC<MatchByEarExerciseProps> = ({
         </div>
       )}
 
-      {/* 5. NÚT ĐIỀU HƯỚNG BÀI TẬP */}
       <div className="flex justify-end pt-2 border-t border-dashed">
         {status !== 'success' ? (
           <Button

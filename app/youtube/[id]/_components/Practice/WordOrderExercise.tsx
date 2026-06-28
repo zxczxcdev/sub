@@ -3,6 +3,7 @@
 import React from 'react';
 import { Button } from '@/components/ui/button';
 import { CheckCircle2, XCircle, Undo2 } from 'lucide-react';
+import { decryptClientData } from '@/lib/cryptoClient';
 
 interface WordOrderExerciseProps {
   currentSub: {
@@ -24,40 +25,71 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
     'idle',
   );
 
-  const initExercise = React.useCallback(() => {
-    if (!currentSub) return;
-
-    let tokens: string[] = [];
-    const text = currentSub.original_text.trim();
-    const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
-      streamConfig?.sourceLang?.toLowerCase() || '',
-    );
-
-    if (isChinese) {
-      tokens = text
-        .replace(/[\s[:punct:]，。！？、（）()""'';；：:]/g, '')
-        .split('');
-    } else {
-      tokens = text
-        .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()!?，。]/g, '')
-        .split(/\s+/)
-        .filter((t) => t.length > 0);
-    }
-
-    const shuffled = [...tokens];
+  const shuffleArray = (array: string[]) => {
+    const shuffled = [...array];
     for (let i = shuffled.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
-
-    setPoolTokens(shuffled);
-    setSelectedTokens([]);
-    setStatus('idle');
-  }, [currentSub, streamConfig]);
+    return shuffled;
+  };
 
   React.useEffect(() => {
-    initExercise();
-  }, [initExercise]);
+    if (!currentSub) return;
+
+    const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
+      streamConfig?.sourceLang?.toLowerCase() || '',
+    );
+
+    const PUNCT_REGEX = /[\s[:punct:]，。！？、（）()""'';；：:._`~’‘“”]/g;
+
+    const loadTokensDirectly = async () => {
+      if (!isChinese) {
+        const rawWords = currentSub.original_text.split(/\s+/);
+
+        // Giữ nguyên từ gốc (chỉ loại bỏ khoảng trắng rỗng), không replace dấu câu lúc tạo token
+        // để người dùng nhìn thấy từ hoàn chỉnh (ví dụ: "don't" thay vì biến thành "dont")
+        const cleanWords = rawWords.filter((word) => word.trim().length > 0);
+
+        setPoolTokens(shuffleArray(cleanWords));
+        setSelectedTokens([]);
+        setStatus('idle');
+        return;
+      }
+
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+        const response = await fetch(`${baseUrl}/api/practice/segment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: currentSub.original_text,
+            is_chinese: true,
+          }),
+        });
+
+        const resData = await response.json();
+        if (!resData.data) return;
+
+        const decryptedData = await decryptClientData(resData.data);
+        const tokens: string[] = decryptedData.tokens || [];
+
+        if (tokens.length === 0) return;
+
+        setPoolTokens(tokens);
+        setSelectedTokens([]);
+        setStatus('idle');
+      } catch (error) {
+        console.error('Lỗi kết nối trực tiếp FastAPI ở WordOrder:', error);
+        const fallbackChinese = currentSub.original_text
+          .replace(PUNCT_REGEX, '')
+          .split('');
+        setPoolTokens(shuffleArray(fallbackChinese));
+      }
+    };
+
+    loadTokensDirectly();
+  }, [currentSub, streamConfig]);
 
   if (!currentSub) return null;
 
@@ -83,15 +115,21 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
   };
 
   const handleCheckAnswer = () => {
-    const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
-      streamConfig?.sourceLang?.toLowerCase() || '',
-    );
+    if (!currentSub) return;
+
+    // 🌟 SỬ DỤNG REGEX UNICODE CHUẨN TRÌNH DUYỆT ĐỂ XÓA SẠCH DẤU CÂU + KHOẢNG TRẮNG
+    // \p{P} đại diện cho tất cả các loại dấu câu trên thế giới (Anh, Trung, Hàn, Nhật...)
+    // /g: tìm kiếm toàn bộ, /u: kích hoạt chế độ xử lý Unicode nâng cao
+    const CLEAN_REGEX = /[\s\p{P}’‘“”]/gu;
 
     const cleanOriginal = currentSub.original_text
       .toLowerCase()
-      .replace(/[\s[:punct:]，。！？、（）()""'';；：:]/g, '');
+      .replace(CLEAN_REGEX, '');
 
-    const cleanUser = selectedTokens.join(isChinese ? '' : '').toLowerCase();
+    const cleanUser = selectedTokens
+      .join('')
+      .toLowerCase()
+      .replace(CLEAN_REGEX, '');
 
     if (cleanUser === cleanOriginal) {
       setStatus('success');
@@ -100,9 +138,42 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
     }
   };
 
+  // Hàm in thông tin ra tab Console F12
+  const printDebugInfo = (
+    rawOriginal: string,
+    userTokens: string[],
+    cleanOrig: string,
+    cleanUsr: string,
+  ) => {
+    console.log(
+      '%c========= WORD ORDER DEBUG =========',
+      'color: #3b82f6; font-weight: bold; font-size: 12px;',
+    );
+    console.log('1. Câu gốc chưa xử lý :', `"${rawOriginal}"`);
+    console.log('2. Các token user xếp :', userTokens);
+    console.log(
+      '3. Chuỗi GỐC sau dọn dẹp :',
+      `"${cleanOrig}" (Độ dài: ${cleanOrig.length})`,
+    );
+    console.log(
+      '4. Chuỗi USER sau dọn dẹp:',
+      `"${cleanUsr}" (Độ dài: ${cleanUsr.length})`,
+    );
+    console.log(
+      '5. Kết quả so khớp trực tiếp :',
+      cleanOrig === cleanUsr ? '%cĐÚNG KHỚP 100%' : '%cTHẤT BẠI (LỆCH CHUỖI)',
+      cleanOrig === cleanUsr
+        ? 'color: green; font-weight: bold;'
+        : 'color: red; font-weight: bold;',
+    );
+    console.log(
+      '%c=====================================',
+      'color: #3b82f6; font-weight: bold;',
+    );
+  };
+
   return (
     <div className="space-y-6 w-full max-w-xl mx-auto pt-2 animate-in fade-in-50 duration-200">
-      {/* GỢI Ý NGHĨA DỊCH DẪN DẮT NGỮ PHÁP */}
       <div className="p-4 rounded-xl bg-muted/50 border border-border/60 select-none">
         <span className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider block mb-0.5">
           Dựa vào nghĩa dịch để sắp xếp câu viết:
@@ -112,7 +183,6 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
         </p>
       </div>
 
-      {/* KHAY ĐÁP ÁN ĐANG GHÉP */}
       <div className="space-y-2">
         <div className="flex items-center justify-between select-none">
           <span className="text-xs font-bold text-muted-foreground uppercase tracking-wide">
@@ -153,7 +223,6 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
         </div>
       </div>
 
-      {/* KHAY CHỨA TỪ KHÓA CHỜ CHỌN */}
       {poolTokens.length > 0 && (
         <div className="space-y-2 select-none">
           <span className="text-xs font-bold text-muted-foreground/60 uppercase tracking-wide">
@@ -176,14 +245,13 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
         </div>
       )}
 
-      {/* HIỂN THỊ TRẠNG THÁI */}
       {status === 'success' && (
         <div className="flex items-start gap-3 p-4 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400">
           <CheckCircle2 className="w-5 h-5 shrink-0 mt-0.5" />
           <div className="text-sm">
             <p className="font-bold">Cấu trúc câu hoàn toàn chính xác!</p>
             <p className="text-xs text-muted-foreground/90">
-              Bạn đã thành thạo cách viết và trật tự ngữ pháp câu này.
+              Bạn đã thành thạo cách viết câu này.
             </p>
           </div>
         </div>
@@ -195,14 +263,12 @@ const WordOrderExercise: React.FC<WordOrderExerciseProps> = ({
           <div className="text-sm">
             <p className="font-bold">Sai trật tự cú pháp!</p>
             <p className="text-xs text-muted-foreground/90">
-              Các từ chưa được xếp đúng vị trí ngữ pháp chuẩn. Nhấn "Thu hồi từ"
-              để chỉnh lại.
+              Các từ chưa được xếp đúng vị trí ngữ pháp chuẩn.
             </p>
           </div>
         </div>
       )}
 
-      {/* THANH ĐIỀU HƯỚNG ACTION BÊN DƯỚI */}
       <div className="flex justify-end pt-2 border-t border-dashed">
         {status !== 'success' ? (
           <Button

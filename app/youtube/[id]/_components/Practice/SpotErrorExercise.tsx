@@ -4,6 +4,7 @@ import React from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { CheckCircle2, XCircle, AlertTriangle, RotateCcw } from 'lucide-react';
+import { decryptClientData } from '@/lib/cryptoClient'; // 🌟 Import helper giải mã bảo mật
 
 interface SpotErrorExerciseProps {
   currentSub: {
@@ -25,59 +26,73 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
   const [selectedWordIndex, setSelectedWordIndex] = React.useState<
     number | null
   >(null);
-
   const [userCorrection, setUserCorrection] = React.useState('');
   const [status, setStatus] = React.useState<
     'idle' | 'finding' | 'success' | 'error'
   >('idle');
-  const [isCorrectionError, setIsCorrectionError] = React.useState(false); // Theo dõi riêng lỗi nhập chính tả
+  const [isCorrectionError, setIsCorrectionError] = React.useState(false);
 
-  // Hàm khởi tạo câu hỏi (được tách riêng để có thể gọi lại khi bấm "Làm lại")
+  // Biểu thức Unicode dọn sạch ký tự đặc biệt đồng bộ trên trình duyệt
+  const CLEAN_REGEX = /[\s\p{P}’‘“”\-\[\]\{\}\\\/]/gu;
+
   const initExercise = React.useCallback(() => {
     if (!currentSub) return;
 
-    const originalText = currentSub.original_text.trim();
     const isChinese = ['zh-hans', 'zh-hant', 'zh'].includes(
       streamConfig?.sourceLang?.toLowerCase() || '',
     );
 
-    let originalTokens: string[] = [];
-    if (isChinese) {
-      originalTokens = originalText
-        .replace(/[\s[:punct:]，。！？、（）()""'';；：:]/g, '')
-        .split('');
-    } else {
-      originalTokens = originalText.split(/\s+/);
-    }
+    const loadSpotErrorQuizDirectly = async () => {
+      try {
+        const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+        // 🌟 GỌI TRỰC TIẾP LÊN ENDPOINT TẠO BẪY THÔNG MINH CỦA FASTAPI
+        const response = await fetch(`${baseUrl}/api/practice/spot-error`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: currentSub.original_text,
+            is_chinese: isChinese,
+          }),
+        });
 
-    if (originalTokens.length === 0) return;
+        const resData = await response.json();
+        if (!resData.data) return;
 
-    const targetIdx = Math.floor(Math.random() * originalTokens.length);
-    const wordToCorrupt = originalTokens[targetIdx];
+        // 🌟 GIẢI MÃ GÓI TIN CHỨA ĐÁP ÁN BẰNG PHẦN CỨNG TRÌNH DUYỆT
+        const decryptedData = await decryptClientData(resData.data);
 
-    let corruptedWord = wordToCorrupt;
-    if (isChinese) {
-      corruptedWord = '某';
-    } else {
-      if (wordToCorrupt.length > 3) {
-        corruptedWord = wordToCorrupt.slice(0, -1) + 'z';
-      } else {
-        corruptedWord = wordToCorrupt + 'x';
+        if (!decryptedData.tokens || decryptedData.error_index === -1) return;
+
+        setTokens(decryptedData.tokens);
+        setErrorIndex(decryptedData.error_index);
+        setCorrectWord(decryptedData.correct_word);
+
+        setSelectedWordIndex(null);
+        setUserCorrection('');
+        setStatus('idle');
+        setIsCorrectionError(false);
+      } catch (error) {
+        console.error('Lỗi kết nối FastAPI hoặc giải mã tại SpotError:', error);
+
+        // Luồng dự phòng (Fallback) cục bộ nếu mất kết nối server
+        const originalTokens = isChinese
+          ? currentSub.original_text.replace(CLEAN_REGEX, '').split('')
+          : currentSub.original_text.split(/\s+/);
+
+        if (originalTokens.length > 0) {
+          const fallbackIdx = Math.floor(Math.random() * originalTokens.length);
+          const rawWord = originalTokens[fallbackIdx];
+          const display = [...originalTokens];
+          display[fallbackIdx] = isChinese ? '某' : rawWord + 'x';
+
+          setTokens(display);
+          setErrorIndex(fallbackIdx);
+          setCorrectWord(rawWord.replace(CLEAN_REGEX, ''));
+        }
       }
-    }
+    };
 
-    const displayTokens = [...originalTokens];
-    displayTokens[targetIdx] = corruptedWord;
-
-    setTokens(displayTokens);
-    setErrorIndex(targetIdx);
-    setCorrectWord(
-      wordToCorrupt.replace(/[.,\/#!$%\^&\*;:{}=\-_`~()!?，。]/g, ''),
-    );
-    setSelectedWordIndex(null);
-    setUserCorrection('');
-    setStatus('idle');
-    setIsCorrectionError(false);
+    loadSpotErrorQuizDirectly();
   }, [currentSub, streamConfig]);
 
   React.useEffect(() => {
@@ -105,7 +120,7 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
     const cleanUser = userCorrection
       .trim()
       .toLowerCase()
-      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()!?，。]/g, '');
+      .replace(CLEAN_REGEX, '');
     const cleanCorrect = correctWord.toLowerCase();
 
     if (cleanUser === cleanCorrect) {
@@ -113,11 +128,10 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
       setIsCorrectionError(false);
     } else {
       setStatus('error');
-      setIsCorrectionError(true); // Đánh dấu người dùng sửa sai chính tả
+      setIsCorrectionError(true);
     }
   };
 
-  // Hàm hiển thị phân tích lỗi sai chi tiết (Chỉ áp dụng khi gõ sai chính tả từ)
   const renderDetailedError = () => {
     const cleanUser = userCorrection.trim();
     const cleanCorrect = correctWord;
@@ -155,7 +169,6 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
             "{currentSub.text}"
           </p>
         </div>
-        {/* Nút làm lại nhanh màn chơi */}
         {status !== 'success' && (
           <Button
             variant="ghost"
@@ -163,7 +176,7 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
             onClick={initExercise}
             className="h-7 text-xs gap-1 text-muted-foreground hover:text-foreground rounded-lg"
           >
-            <RotateCcw className="w-3 h-3" /> Reset
+            <RotateCcw className="w-3 h-3" /> Reset bẫy mới
           </Button>
         )}
       </div>
@@ -171,7 +184,7 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
       {/* ĐOẠN PHỤ ĐỀ CHỨA LỖI SAI CHÍNH TẢ */}
       <div className="space-y-2">
         <span className="text-xs font-bold text-muted-foreground uppercase tracking-wide select-none">
-          Tìm và bấm vào một từ/chữ viết sai chính tả so với audio:
+          Nghe kỹ Audio, tìm và bấm vào một từ/chữ viết sai chính tả ngữ âm:
         </span>
 
         <div className="p-4 rounded-xl border bg-background flex flex-wrap gap-x-2 gap-y-3 leading-relaxed items-center">
@@ -181,9 +194,9 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
               <span
                 key={idx}
                 onClick={() => handleWordClick(idx)}
-                className={`text-base font-semibold px-1.5 py-0.5 rounded-lg cursor-pointer transition-all select-none border ${
+                className={`text-base font-semibold px-2 py-0.5 rounded-lg cursor-pointer transition-all select-none border ${
                   isWordSelected
-                    ? 'bg-primary/10 border-primary text-primary'
+                    ? 'bg-amber-500/10 border-amber-500 text-amber-600 dark:text-amber-400'
                     : 'bg-transparent border-transparent hover:bg-muted/70'
                 }`}
               >
@@ -194,7 +207,7 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
         </div>
       </div>
 
-      {/* PHASE 2: HIỂN THỊ Ô SỬA LỖI CHÍNH TẢ KHI ĐÃ TÌM ĐÚNG VỊ TRÍ VÀNG */}
+      {/* HIỂN THỊ Ô SỬA LỖI CHÍNH TẢ KHI ĐÃ TÌM ĐÚNG VỊ TRÍ VÀNG */}
       {(status === 'finding' || isCorrectionError) && (
         <div className="p-4 rounded-xl border bg-amber-500/5 border-amber-500/10 space-y-3 animate-in slide-in-from-top-2 duration-200">
           <div className="flex items-center justify-between text-xs font-bold text-amber-600 dark:text-amber-400 select-none">
@@ -241,9 +254,7 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
             <p className="font-bold">Tuyệt vời, sửa lỗi thành công!</p>
             <p className="text-xs text-muted-foreground/90">
               Từ đúng nguyên bản của câu là:{' '}
-              <span className="font-bold underline text-emerald-600 dark:text-emerald-400">
-                {correctWord}
-              </span>
+              <span className="font-bold underline">{correctWord}</span>
             </p>
           </div>
         </div>
@@ -259,8 +270,6 @@ const SpotErrorExercise: React.FC<SpotErrorExerciseProps> = ({
                 ? 'Từ bạn vừa chọn không phải là từ bị viết sai. Hãy nghe kỹ lại audio.'
                 : 'Chính tả bạn vừa gõ sửa lại vẫn chưa khớp với video thoại.'}
             </p>
-
-            {/* 🌟 CHỈ RA LỖI SAI CHI TIẾT NẾU GÕ SAI CHÍNH TẢ */}
             {isCorrectionError && renderDetailedError()}
           </div>
         </div>

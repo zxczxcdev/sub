@@ -40,6 +40,7 @@ interface ExerciseWorkspaceProps {
   setLoopingLineIndex: (index: number | null) => void;
   handleReplayLine: () => void;
   handleNextLine: () => void;
+  setHasPausedForLine: (val: number | null) => void;
 }
 
 const ExerciseWorkspace: React.FC<ExerciseWorkspaceProps> = ({
@@ -54,6 +55,7 @@ const ExerciseWorkspace: React.FC<ExerciseWorkspaceProps> = ({
   handleReplayLine,
   handleNextLine,
   streamConfig,
+  setHasPausedForLine,
 }) => {
   const isOpen = currentExercise !== null;
   const [isSlowMode, setIsSlowMode] = React.useState(false);
@@ -61,6 +63,8 @@ const ExerciseWorkspace: React.FC<ExerciseWorkspaceProps> = ({
   const triggerNextLine = () => {
     if (!player || subtitles.length === 0 || currentLineIndex === null) return;
     const nextIdx = Math.min(subtitles.length - 1, currentLineIndex + 1);
+    // 🌟 RESET MỐC CHẶN TRƯỚC KHI NHẢY CÂU MỚI
+    setHasPausedForLine(null);
     player.setPlaybackRate(isSlowMode ? 0.5 : 1);
     player.seekTo(subtitles[nextIdx].start, true);
     player.playVideo();
@@ -292,6 +296,7 @@ const ExerciseWorkspace: React.FC<ExerciseWorkspaceProps> = ({
                   currentLineIndex + 1,
                 );
                 const nextTargetStart = subtitles[nextIdx].start;
+                setHasPausedForLine(null);
 
                 // 2. Ép Player nhảy sang mốc thời gian của câu mới và phát NGAY LẬP TỨC
                 player.setPlaybackRate(isSlowMode ? 0.5 : 1);

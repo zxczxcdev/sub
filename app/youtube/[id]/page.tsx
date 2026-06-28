@@ -10,6 +10,7 @@ import VideoDashboard from './_components/VideoDashboard';
 import PracticeContainer from './_components/Practice';
 import { Button } from '@/components/ui/button';
 import ExerciseWorkspace from './_components/Practice/ExerciseWorkspace';
+
 const cnFont = Noto_Sans_SC({
   subsets: ['latin'],
   weight: ['400', '500', '700'],
@@ -32,39 +33,6 @@ export default function WatchPage() {
     type: string;
   } | null>(null);
 
-  // 🌟 CẬP NHẬT TRONG FILE PAGE.TSX
-  const handleSelectExercise = (category: string, type: string) => {
-    setCurrentExercise({ category, type });
-    if (typeof window !== 'undefined') {
-      window.name = 'dashboard_active'; // Khóa cuộn màn hình
-    }
-
-    // 🔒 KHÓA CỨNG TRÌNH PHÁT VÀO 1 CÂU DUY NHẤT:
-    setListenPractice(true); // Ép hệ thống dừng video khi chạy hết câu thoại
-    setIsLoopLine(false); // Mặc định ban đầu không lặp (Chỉ lặp khi user nhấn Repeat: On trong Dialog)
-    setLoopingLineIndex(null);
-
-    if (player) {
-      player.pauseVideo(); // Đóng băng video ngay lập tức khi vừa mở bài tập
-    }
-    window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleCloseExercise = () => {
-    setCurrentExercise(null);
-    if (typeof window !== 'undefined') {
-      window.name = ''; // Mở khóa cuộn màn hình
-    }
-
-    // 🔓 XẢ TOÀN BỘ TRẠNG THÁI KHÓA KHI THOÁT:
-    setListenPractice(false); // Tắt chế độ ép dừng câu
-    setIsLoopLine(false); // Tắt chế độ lặp câu
-
-    if (player) {
-      player.setPlaybackRate(1); // Trả tốc độ về 1x chuẩn
-      player.playVideo(); // Cho video chạy tiếp tự do bình thường
-    }
-  };
   const [videoMeta, setVideoMeta] = React.useState<any>(null);
   const [subtitles, setSubtitles] = React.useState<any[]>([]);
   const [status, setStatus] = React.useState<
@@ -104,6 +72,43 @@ export default function WatchPage() {
     {},
   );
 
+  // Sử dụng useRef để lưu trữ subtitles mới nhất giúp setInterval không bị tạo lại liên tục
+  const subtitlesRef = React.useRef<any[]>([]);
+  React.useEffect(() => {
+    subtitlesRef.current = subtitles;
+  }, [subtitles]);
+
+  const handleSelectExercise = (category: string, type: string) => {
+    setCurrentExercise({ category, type });
+    if (typeof window !== 'undefined') {
+      window.name = 'dashboard_active'; // Khóa cuộn màn hình
+    }
+
+    setListenPractice(true);
+    setIsLoopLine(false);
+    setLoopingLineIndex(null);
+
+    if (player) {
+      player.pauseVideo();
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const handleCloseExercise = () => {
+    setCurrentExercise(null);
+    if (typeof window !== 'undefined') {
+      window.name = '';
+    }
+
+    setListenPractice(false);
+    setIsLoopLine(false);
+
+    if (player) {
+      player.setPlaybackRate(1);
+      player.playVideo();
+    }
+  };
+
   const handleUserScroll = () => {
     setIsUserScrolling(true);
     if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
@@ -128,7 +133,7 @@ export default function WatchPage() {
       sourceLang: parsed.source_lang,
       targetLang: parsed.target_lang,
     });
-  }, [videoId]);
+  }, [videoId, router]);
 
   React.useEffect(() => {
     if (!videoId || !streamConfig) return;
@@ -204,26 +209,31 @@ export default function WatchPage() {
     };
   }, [videoId, streamConfig]);
 
+  // 🌟 KHẮC PHỤC CHÍNH: Cập nhật cơ chế quét phụ đề qua Ref nhằm tránh xung đột với Stream dữ liệu dang dở
   React.useEffect(() => {
-    if (!player || subtitles.length === 0) return;
+    if (!player) return;
 
     const interval = setInterval(() => {
+      const currentSubs = subtitlesRef.current;
+      if (currentSubs.length === 0) return;
+
       const time = player.getCurrentTime();
       setCurrentTime(time);
       setDuration(player.getDuration() || 0);
 
-      const activeIndex = subtitles.findIndex((sub, idx) => {
-        const nextSub = subtitles[idx + 1];
+      const activeIndex = currentSubs.findIndex((sub, idx) => {
+        const nextSub = currentSubs[idx + 1];
         if (nextSub) return time >= sub.start && time < nextSub.start;
         return time >= sub.start && time <= sub.start + sub.duration;
       });
 
       if (activeIndex !== -1) {
         setCurrentLineIndex(activeIndex);
-        const currentLine = subtitles[activeIndex];
+        const currentLine = currentSubs[activeIndex];
+        const nextLine = currentSubs[activeIndex + 1];
 
         if (loopingLineIndex !== null) {
-          const targetLine = subtitles[loopingLineIndex];
+          const targetLine = currentSubs[loopingLineIndex];
           if (
             targetLine &&
             time >= targetLine.start + targetLine.duration - 0.3
@@ -240,7 +250,16 @@ export default function WatchPage() {
         }
 
         if (listenPractice && hasPausedForLine.current !== activeIndex) {
-          if (time >= currentLine.start + currentLine.duration - 0.2) {
+          let shouldPause = false;
+          if (nextLine) {
+            if (time >= nextLine.start - 0.1) shouldPause = true;
+          } else if (status === 'success') {
+            // Chỉ kích hoạt dừng câu cuối khi phụ đề ĐÃ LOAD HOÀN TOÀN THÀNH CÔNG
+            if (time >= currentLine.start + currentLine.duration - 0.1)
+              shouldPause = true;
+          }
+
+          if (shouldPause) {
             player.pauseVideo();
             hasPausedForLine.current = activeIndex;
           }
@@ -248,10 +267,10 @@ export default function WatchPage() {
       } else {
         setCurrentLineIndex(null);
       }
-    }, 100);
+    }, 40);
 
     return () => clearInterval(interval);
-  }, [player, subtitles, listenPractice, isLoopLine, loopingLineIndex]);
+  }, [player, listenPractice, isLoopLine, loopingLineIndex, status]);
 
   React.useEffect(() => {
     if (typeof window !== 'undefined' && window.name === 'dashboard_active')
@@ -382,7 +401,6 @@ export default function WatchPage() {
     >
       <HeaderBar streamConfig={streamConfig} />
 
-      {/* COMPONENT DASHBOARD ĐẠI DIỆN CHO GRID LAYOUT */}
       <VideoDashboard
         videoId={videoId}
         player={player}
@@ -426,7 +444,7 @@ export default function WatchPage() {
           hasPausedForLine.current = val;
         }}
       />
-      {/* 🌟 4. CONTAINER LUYỆN TẬP MỚI - FULL WIDTH CHẠY ĐỘC LẬP BÊN DƯỚI */}
+
       <PracticeContainer
         onSelectExercise={handleSelectExercise}
         currentExercise={currentExercise}
@@ -440,11 +458,13 @@ export default function WatchPage() {
         player={player}
         handleReplayLine={handleReplayLine}
         handleNextLine={handleNextLine}
-        // Thêm 3 dòng này để đồng bộ nút bấm lặp câu
         isLoopLine={isLoopLine}
         setIsLoopLine={setIsLoopLine}
         setLoopingLineIndex={setLoopingLineIndex}
         streamConfig={streamConfig}
+        setHasPausedForLine={(val) => {
+          hasPausedForLine.current = val;
+        }}
       />
     </div>
   );

@@ -162,7 +162,7 @@ const ShadowingExercise: React.FC<ShadowingExerciseProps> = ({
 
         {/* 🌟 HIỂN THỊ PINYIN: Chỉ render khi là tiếng Trung và câu sub có sẵn trường pinyin */}
         {isChinese && currentSub.pinyin && (
-          <p className="text-xs font-mono text-indigo-600 dark:text-indigo-400 font-medium bg-indigo-500/5 px-2.5 py-1 rounded-md border border-indigo-500/10 mt-0.5 max-w-full break-words">
+          <p className="text-xs font-mono text-indigo-600 dark:text-indigo-400 font-medium bg-indigo-500/5 px-2.5 py-1 rounded-md border border-indigo-500/10 mt-0.5 max-w-full wrap-break-words">
             {currentSub.pinyin}
           </p>
         )}
