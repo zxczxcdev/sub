@@ -2,6 +2,7 @@
 
 import * as React from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useTheme } from 'next-themes';
 import {
   Search,
@@ -13,7 +14,7 @@ import {
   History,
   LogIn,
   LogOut,
-  User as UserIcon,
+  Loader2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -41,16 +42,28 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { toast } from 'sonner'; // 🌟 Sử dụng Toast component của Shadcn thay cho alert()
 
+import ConfigModal from '@/components/ConfigModal';
 import { auth, googleProvider } from '@/lib/firebase';
 import { signInWithPopup, signOut, User } from 'firebase/auth';
 
 export function Navbar() {
+  const router = useRouter();
   const { setTheme, theme } = useTheme();
   const [searchQuery, setSearchQuery] = React.useState('');
   const [isOpenAuthModal, setIsOpenAuthModal] = React.useState(false);
   const [isOpenConfirmLogout, setIsOpenConfirmLogout] = React.useState(false);
+  const [isOpenMobileMenu, setIsOpenMobileMenu] = React.useState(false);
   const [user, setUser] = React.useState<User | null>(null);
+
+  // --- STATES QUẢN LÝ LÀM SẠCH ĐỂ PHÙ HỢP VỚI CONFIGMODAL ---
+  const [loadingCheck, setLoadingCheck] = React.useState(false);
+  const [isOpenConfigModal, setIsOpenConfigModal] = React.useState(false);
+  const [videoData, setVideoData] = React.useState<any>(null);
+  const [availableLanguages, setAvailableLanguages] = React.useState<any[]>([]);
+
+  const mobileInputRef = React.useRef<HTMLInputElement>(null);
 
   React.useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((currentUser) => {
@@ -59,19 +72,89 @@ export function Navbar() {
     return () => unsubscribe();
   }, []);
 
-  const handleSearch = (e: React.FormEvent) => {
+  React.useEffect(() => {
+    if (isOpenMobileMenu) {
+      setTimeout(() => {
+        mobileInputRef.current?.focus();
+      }, 150);
+    }
+  }, [isOpenMobileMenu]);
+
+  const extractVideoId = (url: string) => {
+    const regExp = /^.*(?:v=|\/)([0-9A-Za-z_-]{11}).*/;
+    const match = url.match(regExp);
+    return match ? match[1] : null;
+  };
+
+  const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
-    alert(`Đang tìm kiếm hoặc xử lý link: ${searchQuery}`);
+
+    const videoId = extractVideoId(searchQuery);
+    if (!videoId) {
+      // 🌟 Thay thế alert() thô bạo bằng toast.error mượt mà
+      toast.error('Đường dẫn YouTube không hợp lệ, vui lòng kiểm tra lại!');
+      return;
+    }
+
+    setLoadingCheck(true);
+    setIsOpenMobileMenu(false);
+
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL;
+
+      const response = await fetch(`${baseUrl}/api/youtube/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: searchQuery }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || 'Không thể kiểm tra video này.');
+      }
+
+      const data = await response.json();
+
+      setVideoData({
+        video_id: data.video_id,
+        metadata: data.metadata,
+      });
+      setAvailableLanguages(data.available_languages || []);
+      setIsOpenConfigModal(true);
+    } catch (error: any) {
+      // 🌟 Hiển thị thông báo lỗi hệ thống/API bằng toast
+      toast.error(error.message || 'Lỗi kết nối đến máy chủ.');
+    } finally {
+      setLoadingCheck(false);
+    }
+  };
+
+  const handleModalConfirm = (sourceLang: string, targetLang: string) => {
+    setIsOpenConfigModal(false);
+
+    const configData = {
+      url: searchQuery,
+      source_lang: sourceLang,
+      target_lang: targetLang,
+    };
+    sessionStorage.setItem(
+      `yt_config_${videoData.video_id}`,
+      JSON.stringify(configData),
+    );
+
+    router.push(`/youtube/${videoData.video_id}`);
+    setSearchQuery('');
   };
 
   const handleGoogleAuth = async () => {
     try {
-      const result = await signInWithPopup(auth, googleProvider);
-      console.log('User Info:', result.user);
+      await signInWithPopup(auth, googleProvider);
       setIsOpenAuthModal(false);
+      toast.success('Đăng nhập thành công!');
     } catch (error) {
       console.error('Lỗi Auth Firebase:', error);
+      toast.error('Đăng nhập thất bại, vui lòng thử lại.');
     }
   };
 
@@ -79,8 +162,10 @@ export function Navbar() {
     try {
       await signOut(auth);
       setIsOpenConfirmLogout(false);
+      toast.success('Đã đăng xuất khỏi tài khoản.');
     } catch (error) {
       console.error('Lỗi đăng xuất:', error);
+      toast.error('Không thể đăng xuất, vui lòng thử lại.');
     }
   };
 
@@ -109,12 +194,11 @@ export function Navbar() {
           cài đặt phụ đề của bạn.
         </DialogDescription>
       </DialogHeader>
-
       <div className="flex flex-col gap-3 mt-4 mb-2">
         <Button
           variant="outline"
           onClick={handleGoogleAuth}
-          className="w-full h-11 rounded-full gap-2 font-medium transition-all duration-200 hover:bg-muted active:scale-[0.98] cursor-pointer"
+          className="w-full h-11 rounded-full gap-2 font-medium transition-all duration-200 hover:bg-muted cursor-pointer"
         >
           <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
             <path
@@ -137,11 +221,6 @@ export function Navbar() {
           Tiếp tục với Google
         </Button>
       </div>
-
-      <div className="text-[11px] text-muted-foreground text-center px-4 mt-2 leading-relaxed">
-        Bằng việc tiếp tục, bạn đồng ý với các Điều khoản dịch vụ và Chính sách
-        bảo mật của chúng tôi.
-      </div>
     </DialogContent>
   );
 
@@ -153,7 +232,7 @@ export function Navbar() {
         </DialogTitle>
         <DialogDescription className="text-muted-foreground pt-1">
           Bạn có chắc chắn muốn đăng xuất khỏi tài khoản **{user?.displayName}**
-          không? Mọi lịch sử xem chưa đồng bộ có thể không được lưu lại.
+          không?
         </DialogDescription>
       </DialogHeader>
       <div className="flex items-center justify-end gap-3 mt-4">
@@ -164,7 +243,11 @@ export function Navbar() {
         >
           Hủy bỏ
         </Button>
-        <Button onClick={handleSignOut} className=" rounded-full px-5">
+        <Button
+          variant="destructive"
+          onClick={handleSignOut}
+          className="rounded-full px-5"
+        >
           Đăng xuất
         </Button>
       </div>
@@ -180,7 +263,6 @@ export function Navbar() {
           .slice(0, 2)
           .toUpperCase()
       : 'US';
-
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -214,7 +296,7 @@ export function Navbar() {
           <DropdownMenuSeparator />
           <DropdownMenuItem
             onClick={() => setIsOpenConfirmLogout(true)}
-            className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer"
+            className="text-destructive cursor-pointer"
           >
             <LogOut className="mr-2 h-4 w-4" />
             <span>Đăng xuất</span>
@@ -238,6 +320,7 @@ export function Navbar() {
               </Link>
             </div>
 
+            {/* THANH TÌM KIẾM DESKTOP */}
             <form
               onSubmit={handleSearch}
               className="flex-1 max-w-sm mx-2 hidden md:flex items-center relative"
@@ -248,14 +331,20 @@ export function Navbar() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pr-10 w-full h-9 bg-muted/50 rounded-full border-input focus-visible:ring-ring"
+                disabled={loadingCheck}
               />
               <Button
                 type="submit"
                 variant="ghost"
                 size="icon"
-                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full text-muted-foreground hover:text-foreground hover:bg-transparent"
+                disabled={loadingCheck || !searchQuery.trim()}
+                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 rounded-full text-muted-foreground"
               >
-                <Search className="w-4 h-4" />
+                {loadingCheck ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Search className="w-4 h-4" />
+                )}
               </Button>
             </form>
 
@@ -282,17 +371,8 @@ export function Navbar() {
               <Button
                 variant="ghost"
                 size="icon"
-                className="md:hidden rounded-full h-9 w-9 text-muted-foreground hover:text-foreground"
-              >
-                <Search className="w-4 h-4" />
-              </Button>
-
-              <Button
-                variant="ghost"
-                size="icon"
-                className="rounded-full h-9 w-9 text-muted-foreground hover:text-foreground"
+                className="rounded-full h-9 w-9 text-muted-foreground"
                 onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-                title="Đổi giao diện"
               >
                 <Sun className="h-4 w-4 rotate-0 scale-100 transition-all dark:-rotate-90 dark:scale-0" />
                 <Moon className="absolute h-4 w-4 rotate-90 scale-0 transition-all dark:rotate-0 dark:scale-100" />
@@ -309,7 +389,7 @@ export function Navbar() {
                     <DialogTrigger asChild>
                       <Button
                         variant="default"
-                        className="rounded-full h-9 px-5 text-sm font-medium shadow-sm"
+                        className="rounded-full h-9 px-5 text-sm font-medium"
                       >
                         Đăng nhập
                       </Button>
@@ -319,44 +399,57 @@ export function Navbar() {
                 )}
               </div>
 
-              <div className="lg:hidden">
-                <Sheet>
+              {/* KHỐI ĐIỀU HƯỚNG CHO MOBILE & TABLET */}
+              <div className="lg:hidden flex items-center gap-1">
+                <Sheet
+                  open={isOpenMobileMenu}
+                  onOpenChange={setIsOpenMobileMenu}
+                >
                   <SheetTrigger asChild>
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="rounded-full h-9 w-9 text-muted-foreground hover:text-foreground"
+                      className="rounded-full h-9 w-9 text-muted-foreground"
                     >
                       <Menu className="w-4 h-4" />
                     </Button>
                   </SheetTrigger>
+
                   <SheetContent
                     side="right"
                     className="w-[280px] sm:w-[350px] flex flex-col justify-between pb-8 border-l border-border"
                   >
                     <div>
                       <SheetTitle className="text-center font-bold text-foreground flex items-center justify-center gap-2 mb-6 p-4">
-                        SubTubeCC111
+                        SubTubeCC
                       </SheetTitle>
 
+                      {/* THANH TÌM KIẾM TRÊN MOBILE MENU */}
                       <form
                         onSubmit={handleSearch}
                         className="flex items-center relative mb-6 px-1"
                       >
                         <Input
+                          ref={mobileInputRef}
                           type="text"
                           placeholder="Dán link YouTube..."
                           value={searchQuery}
                           onChange={(e) => setSearchQuery(e.target.value)}
-                          className="w-full h-10 pl-4 pr-11 bg-muted/40 rounded-full border-input focus-visible:ring-ring transition-all"
+                          className="w-full h-10 pl-4 pr-11 bg-muted/40 rounded-full border-input"
+                          disabled={loadingCheck}
                         />
                         <Button
                           type="submit"
                           variant="ghost"
                           size="icon"
-                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full text-muted-foreground hover:text-foreground hover:bg-muted"
+                          disabled={loadingCheck || !searchQuery.trim()}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 h-8 w-8 rounded-full text-muted-foreground"
                         >
-                          <Search className="w-4 h-4" />
+                          {loadingCheck ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Search className="w-4 h-4" />
+                          )}
                         </Button>
                       </form>
 
@@ -365,8 +458,9 @@ export function Navbar() {
                           <Button
                             key={item.href}
                             variant="ghost"
-                            className="justify-start w-full text-base rounded-xl text-muted-foreground hover:text-foreground"
+                            className="justify-start w-full text-base rounded-xl text-muted-foreground"
                             asChild
+                            onClick={() => setIsOpenMobileMenu(false)}
                           >
                             <Link href={item.href}>
                               {item.icon}
@@ -397,7 +491,10 @@ export function Navbar() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => setIsOpenConfirmLogout(true)}
+                            onClick={() => {
+                              setIsOpenMobileMenu(false);
+                              setIsOpenConfirmLogout(true);
+                            }}
                             className="text-destructive rounded-full"
                           >
                             <LogOut className="w-4 h-4" />
@@ -427,6 +524,14 @@ export function Navbar() {
           </div>
         </header>
       </div>
+
+      <ConfigModal
+        isOpen={isOpenConfigModal}
+        onOpenChange={setIsOpenConfigModal}
+        video={videoData}
+        availableLanguages={availableLanguages}
+        onConfirm={handleModalConfirm}
+      />
 
       <Dialog open={isOpenConfirmLogout} onOpenChange={setIsOpenConfirmLogout}>
         <LogoutConfirmModalContent />

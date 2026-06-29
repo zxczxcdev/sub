@@ -3,17 +3,9 @@
 import type { Metadata } from 'next';
 import { Outfit, Geist_Mono } from 'next/font/google';
 import './globals.css';
-import { ThemeProvider } from '@/components/theme-provider';
-
-const fontSans = Outfit({
-  subsets: ['latin'],
-  variable: '--font-sans',
-});
-
-const fontMono = Geist_Mono({
-  subsets: ['latin'],
-  variable: '--font-mono',
-});
+import { Providers } from '@/components/Providers'; // 🌟 Import wrapper mới
+import { Navbar } from '@/components/ui/navbar';
+import { Toaster } from '@/components/ui/sonner';
 
 export const metadata: Metadata = {
   title: 'Create Next App',
@@ -28,9 +20,14 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body>
-        <ThemeProvider attribute="class" defaultTheme="dark" enableSystem>
+        <Providers>
+          {/* Gọi Navbar ở đây */}
+          <div className="pb-4">
+            <Navbar />
+          </div>
           {children}
-        </ThemeProvider>
+          <Toaster richColors closeButton position="top-right" />
+        </Providers>
       </body>
     </html>
   );
